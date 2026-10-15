@@ -1,0 +1,8 @@
+1) ZIP dosyasini tamamen klasore cikartin.
+2) policem_real_app klasorundeki POLICEM_BASLAT.bat dosyasina cift tiklayin.
+3) Python 3.11+ kurulu ve internet baglantisi gerekli (ilk kurulumda).
+4) Tarayicida http://127.0.0.1:8000 adresini acin.
+5) Ilk hesap ekraninda hesap olusturun.
+6) Siyah komut penceresini uygulama boyunca acik tutun.
+NOT: index.html dosyasina cift tiklamayin.
+Mevcut data klasorunuz varsa eski verilerinizi kaybetmemek icin bu klasoru yedekleyin.
