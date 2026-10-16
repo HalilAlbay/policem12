@@ -351,7 +351,7 @@ def transfer(data:Transfer,u=Depends(require('partner','manager'))):
 def audits(u=Depends(require('partner','manager'))):
  with tx() as c:return [dict(x) for x in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 200')]
 
-FIELDS={'customer_name':[r'(?:sigortal[ıi]|ad[ıi]\s*soyad[ıi]|ad\s*soyad)\s*[:\-]\s*([^\n]{4,100})'], 'policy_number':[r'(?:poliçe\s*(?:no|numaras[ıi])|policy\s*(?:no|number))\s*[:\-]\s*([A-Za-z0-9\-/]{3,60})'], 'premium':[r'(?:toplam\s*prim|brüt\s*prim|prim\s*tutar[ıi])\s*[:\-]?\s*([\d.,]+)'], 'start_date':[r'(?:başlang[ıi]ç\s*tarihi|vade\s*başlang[ıi]c[ıi])\s*[:\-]\s*(\d{2}[./-]\d{2}[./-]\d{4})'], 'end_date':[r'(?:bitiş\s*tarihi|vade\s*bitişi)\s*[:\-]\s*(\d{2}[./-]\d{2}[./-]\d{4})']}
+FIELDS={'customer_name':[r'(?:sigortal[ıi]|ad[ıi]\s*soyad[ıi]|ad\s*soyad)\s*[:\-]\s*([^\n]{4,100})'], 'policy_number':[r'(?:poliçe\s*(?:no|numaras[ıi])|policy\s*(?:no|number))\s*[:\-]\s*([A-Za-z0-9\-/]{3,60})'], 'premium':[r'(?:toplam\s*prim|brüt\s*prim|prim\s*tutar[ıi])\s*[:\-]?\s*([\d.,]+)'], 'start_date':[r'(?:(?:poliçe\s*)?başlang[ıi]ç\s*tarihi|vade\s*başlang[ıi]c[ıi])\s*[:\-]?\s*(\d{2}[./-]\d{2}[./-]\d{4})'], 'end_date':[r'(?:(?:poliçe\s*)?bitiş\s*tarihi|vade\s*bitişi)\s*[:\-]?\s*(\d{2}[./-]\d{2}[./-]\d{4})']}
 TYPES={'DASK':['dask','zorunlu deprem'],'Kasko':['kasko'],'Konut':['konut'],'TSS':['tamamlayıcı sağlık','tss'],'Trafik':['zorunlu trafik','trafik sigortası']}
 def parse_pdf(blob):
  try:
