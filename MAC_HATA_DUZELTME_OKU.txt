@@ -1,0 +1,1 @@
+MacBook FastAPI startup hatasi giderildi. Bu paketi AYRI bir klasore acin. POLICEM_MAC_BASLAT.command dosyasini calistirin. Onceki data klasorunu silmeyin. Bu yerel test paketidir.

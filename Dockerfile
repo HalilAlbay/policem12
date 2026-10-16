@@ -3,7 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 POLICEM_DATA=/var/lib/policem
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py reminder_job.py ./
+COPY app.py customer_portal.py reminder_job.py ./
 COPY static/ ./static/
 RUN useradd --create-home --uid 10001 policem && mkdir -p /var/lib/policem && chown -R policem:policem /var/lib/policem
 USER policem

@@ -1,0 +1,14 @@
+POLICEM - WINDOWS + MACBOOK TEST PAKETI
+
+MAC: ZIP'i acin, POLICEM_MAC_BASLAT.command dosyasina cift tiklayin.
+macOS engellerse sag tik > Ac (Open). Python 3 gereklidir.
+Uygulama Safari'de http://127.0.0.1:8000 adresinde acilir.
+Ilk hesap kurulumu icin .local_setup_key dosyasindaki anahtari kullanin.
+Kapatmak icin Terminal penceresinde Control+C.
+
+WINDOWS: WINDOWS_YARIN_BASLAT.bat dosyasina cift tiklayin.
+Bu paket mevcut calisan kurulumun uzerine yazilmamalidir.
+
+ONEMLI: Bu iki baslatici YEREL calisir. Ayni verileri Windows, Mac,
+iPhone ve Android'de ortak gormek icin guvenli merkezi sunucu gerekir.
+Bu paket gercek musteri verileri icin uretim ortami degildir.

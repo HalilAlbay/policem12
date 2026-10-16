@@ -1,0 +1,9 @@
+POLICEM - WINDOWS TEST PAKETI
+1. ZIP'i bir klasore cikartin.
+2. WINDOWS_YARIN_BASLAT.bat dosyasini cift tiklayin.
+3. Musteri uygulamasi: http://127.0.0.1:8000/musteri
+4. Eski acente paneli: http://127.0.0.1:8000/
+5. Musteri teklifleri acente paneli API'sinde: GET /api/agency/quote-requests (acente Bearer token ile).
+
+NOT: Bu paket eski app.py dosyasini korur; sonuna yalnizca customer_portal kaydi eklenmistir. Eski SQLite tablolari degismez. Mevcut data klasorunuzun yedegini alin. Yeni musteri tablolarinin olusturulmasi ilk acilista otomatik yapilir.
+UYARI: Bu surum yerel gelistirme/test icindir. Gercek musteri verileriyle canli kullanima uygun degildir. Acente izolasyonu, guvenlik ve KVKK gereklilikleri tamamlanmalidir.

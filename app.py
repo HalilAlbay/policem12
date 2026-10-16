@@ -460,3 +460,7 @@ def reminder_tick(today=None):
 @app.get('/api/reminders')
 def reminders(u=Depends(current)):
  with tx() as c:return [dict(x) for x in c.execute('SELECT * FROM reminders ORDER BY id DESC LIMIT 100')]
+
+# Additive customer experience; existing agency endpoints and database tables remain unchanged.
+from customer_portal import register as register_customer_portal
+register_customer_portal(app,conn,tx,password_hash,check_pw,DATA,ROOT)
