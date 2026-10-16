@@ -106,6 +106,7 @@ def setup_account(data:FirstAccount):
 
 class Login(BaseModel): username:str;password:str
 class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
+class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
 class NewUser(BaseModel):username:str;display_name:str;password:str=Field(min_length=12);role:str;branch_id:int|None=None;email:str|None=None
@@ -238,6 +239,18 @@ def add_user(data:NewUser,u=Depends(require('partner','manager'))):
  with tx() as c:
   cur=c.execute('INSERT INTO users(username,display_name,role,password_hash,branch_id,email) VALUES (?,?,?,?,?,?)',(data.username,data.display_name,data.role,password_hash(data.password),data.branch_id,data.email));audit(c,u['id'],'create','user',cur.lastrowid)
  return {'id':cur.lastrowid}
+@app.post('/api/users/{user_id}/reset-password')
+def reset_staff_password(user_id:int,data:AdminPasswordReset,u=Depends(require('partner','manager'))):
+ with tx() as c:
+  target=c.execute('SELECT id,role,active FROM users WHERE id=?',(user_id,)).fetchone()
+  if not target or not target['active']:raise HTTPException(404,'Aktif kullanıcı bulunamadı')
+  if user_id==u['id']:raise HTTPException(400,'Kendi şifrenizi Ayarlar bölümünden değiştirin')
+  if u['role']=='manager' and target['role']!='staff':raise HTTPException(403,'Bu hesabın şifresini değiştirme yetkiniz yok')
+  c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.password),user_id))
+  c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+  audit(c,u['id'],'reset_password','user',user_id)
+ return {'ok':True}
+
 @app.delete('/api/{kind}/{item_id}')
 def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
  if kind not in ('agencies','branches','users'):raise HTTPException(404)
