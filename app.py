@@ -46,6 +46,11 @@ def init():
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id INTEGER,payload TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
   ''')
   c.execute("UPDATE branding SET app_name='Parantez Poliçem' WHERE id=1 AND app_name='Poliçem'")
+  cols={x['name'] for x in c.execute('PRAGMA table_info(users)')}
+  if 'phone' not in cols:c.execute('ALTER TABLE users ADD COLUMN phone TEXT')
+  if 'start_date' not in cols:c.execute('ALTER TABLE users ADD COLUMN start_date TEXT')
+  if 'job_title' not in cols:c.execute("ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT 'technical'")
+  c.execute("UPDATE users SET job_title=CASE role WHEN 'partner' THEN 'agency_authority' WHEN 'manager' THEN 'agency_manager' ELSE 'technical' END WHERE job_title='technical' AND role IN ('partner','manager')")
   if not c.execute('SELECT 1 FROM agencies').fetchone():
    c.execute('INSERT INTO agencies(name) VALUES (?)',('Ana Acente',))
    c.execute('INSERT INTO branches(agency_id,name) VALUES (1,?)',('Merkez',))
@@ -129,7 +134,8 @@ class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
 class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
-class NewUser(BaseModel):username:str;display_name:str;password:str=Field(min_length=12);role:str;branch_id:int|None=None;email:str|None=None
+class NewUser(BaseModel):username:str;display_name:str;password:str=Field(min_length=12);role:str;branch_id:int|None=None;email:str|None=None;phone:str|None=None;start_date:date|None=None;job_title:str|None=None
+class UserEdit(BaseModel):display_name:str=Field(min_length=2);phone:str;start_date:date;job_title:str;active:bool
 class PolicyInput(BaseModel):agency_id:int;branch_id:int|None=None;owner_user_id:int|None=None;customer_name:str;policy_type:str;policy_number:str;insurer:str='';premium:float=Field(ge=0);start_date:date;end_date:date;issued_date:date;tracking:bool=True;external:bool=False;seller_user_id:int|None=None
 class RenewalUpdate(BaseModel):status:str;new_policy:PolicyInput|None=None
 class Transfer(BaseModel):from_user_id:int;to_user_id:int;policy_ids:list[int]|None=None
@@ -160,7 +166,7 @@ def login(data:Login):
   c.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400))
  return {'token':token,'user':public_user(dict(u))}
 
-def public_user(u):return {k:u.get(k) for k in ['id','username','display_name','role','branch_id','theme','email','active']}
+def public_user(u):return {k:u.get(k) for k in ['id','username','display_name','role','branch_id','theme','email','active','phone','start_date','job_title']}
 @app.get('/api/me')
 def me(u=Depends(current)):return public_user(u)
 @app.post('/api/logout')
@@ -253,12 +259,44 @@ def add_branch(data:NewBranch,u=Depends(require('partner','manager'))):
  with tx() as c:
   cur=c.execute('INSERT INTO branches(agency_id,name) VALUES (?,?)',(data.agency_id,data.name.strip()));audit(c,u['id'],'create','branch',cur.lastrowid)
  return {'id':cur.lastrowid}
+JOB_ROLES={'agency_authority':'partner','agency_manager':'manager','technical':'staff','assistant_technical':'staff'}
+def check_job_permission(actor,title):
+ if title not in JOB_ROLES:raise HTTPException(400,'Unvan geçersiz')
+ if actor['role']=='manager' and title not in ('technical','assistant_technical'):raise HTTPException(403,'Bu unvanı yönetme yetkiniz yok')
+
 @app.post('/api/users')
 def add_user(data:NewUser,u=Depends(require('partner','manager'))):
- if data.role not in ('partner','manager','staff') or (u['role']=='manager' and data.role!='staff'):raise HTTPException(403,'Rol ataması yasak')
+ title=data.job_title or {'partner':'agency_authority','manager':'agency_manager','staff':'technical'}.get(data.role)
+ check_job_permission(u,title)
+ if JOB_ROLES[title]!=data.role:raise HTTPException(400,'Rol ve unvan uyuşmuyor')
+ if not data.phone or not data.phone.strip() or not data.start_date:raise HTTPException(400,'Telefon ve işe başlama tarihi zorunlu')
+ try:
+  with tx() as c:
+   cur=c.execute('INSERT INTO users(username,display_name,role,password_hash,branch_id,email,phone,start_date,job_title) VALUES (?,?,?,?,?,?,?,?,?)',(data.username,data.display_name.strip(),data.role,password_hash(data.password),data.branch_id,data.email,data.phone.strip(),str(data.start_date),title))
+   audit(c,u['id'],'create','user',cur.lastrowid,{'job_title':title})
+  return {'id':cur.lastrowid}
+ except sqlite3.IntegrityError:raise HTTPException(409,'Kullanıcı adı zaten kayıtlı')
+
+@app.put('/api/users/{user_id}')
+def edit_user(user_id:int,data:UserEdit,u=Depends(require('partner','manager'))):
+ check_job_permission(u,data.job_title)
+ if not data.phone.strip():raise HTTPException(400,'Telefon zorunlu')
  with tx() as c:
-  cur=c.execute('INSERT INTO users(username,display_name,role,password_hash,branch_id,email) VALUES (?,?,?,?,?,?)',(data.username,data.display_name,data.role,password_hash(data.password),data.branch_id,data.email));audit(c,u['id'],'create','user',cur.lastrowid)
- return {'id':cur.lastrowid}
+  old=c.execute('SELECT * FROM users WHERE id=?',(user_id,)).fetchone()
+  if not old:raise HTTPException(404,'Personel bulunamadı')
+  if u['role']=='manager' and old['role']!='staff':raise HTTPException(403,'Üst unvanı değiştiremezsiniz')
+  if user_id==u['id'] and not data.active:raise HTTPException(400,'Kendinizi pasife alamazsınız')
+  if old['role']=='partner' and (JOB_ROLES[data.job_title]!='partner' or not data.active):
+   count=c.execute("SELECT COUNT(*) FROM users WHERE role='partner' AND active=1").fetchone()[0]
+   if old['active'] and count<=1:raise HTTPException(409,'Son aktif acente yetkilisi değiştirilemez')
+  if not data.active and old['active']:
+   count=c.execute('SELECT COUNT(*) FROM policies WHERE owner_user_id=?',(user_id,)).fetchone()[0]
+   if count:raise HTTPException(409,f'Önce {count} poliçeyi başka personele devredin')
+  c.execute('UPDATE users SET display_name=?,phone=?,start_date=?,job_title=?,role=?,active=? WHERE id=?',(data.display_name.strip(),data.phone.strip(),str(data.start_date),data.job_title,JOB_ROLES[data.job_title],int(data.active),user_id))
+  if not data.active:c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+  audit(c,u['id'],'update','user',user_id,{'from_title':old['job_title'],'to_title':data.job_title,'active':data.active})
+ return {'ok':True}
+
 @app.post('/api/users/{user_id}/reset-password')
 def reset_staff_password(user_id:int,data:AdminPasswordReset,u=Depends(require('partner','manager'))):
  with tx() as c:
@@ -280,6 +318,12 @@ def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
   if kind=='users' and u['role']=='manager':
    target=c.execute('SELECT role FROM users WHERE id=?',(item_id,)).fetchone()
    if not target or target['role']!='staff':raise HTTPException(403)
+  if kind=='users':
+   old=c.execute('SELECT role,active FROM users WHERE id=?',(item_id,)).fetchone()
+   if not old:raise HTTPException(404,'Personel bulunamadı')
+   if old['role']=='partner' and old['active'] and c.execute("SELECT COUNT(*) FROM users WHERE role='partner' AND active=1").fetchone()[0]<=1:raise HTTPException(409,'Son aktif acente yetkilisi kapatılamaz')
+   if c.execute('SELECT COUNT(*) FROM policies WHERE owner_user_id=?',(item_id,)).fetchone()[0]:raise HTTPException(409,'Önce poliçeleri başka personele devredin')
+   c.execute('DELETE FROM sessions WHERE user_id=?',(item_id,))
   c.execute(f'UPDATE {kind} SET active=0 WHERE id=?',(item_id,));audit(c,u['id'],'deactivate',kind,item_id)
  return {'ok':True}
 
