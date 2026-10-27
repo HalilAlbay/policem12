@@ -48,13 +48,49 @@ def ensure_schema(c: sqlite3.Connection):
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
 
+def vapid_diagnostic():
+    """Safe, non-secret diagnostics of VAPID configuration."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    pub = os.getenv("POLICEM_VAPID_PUBLIC_KEY", "").strip()
+    key = os.getenv("POLICEM_VAPID_PRIVATE_KEY", "").strip().replace("\\n", "\n")
+    subject = os.getenv("POLICEM_VAPID_SUBJECT", "").strip()
+    result = {"subject_valid": subject.startswith(("mailto:", "https://")),
+              "public_valid": False, "private_valid": False, "keys_match": False,
+              "key_format": "pem" if "BEGIN" in key else "base64url"}
+    try:
+        b = base64.urlsafe_b64decode(pub + "=" * (-len(pub) % 4))
+        public_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b)
+        result["public_valid"] = True
+    except Exception:
+        public_key = None
+    try:
+        if "BEGIN" in key:
+            private_key = serialization.load_pem_private_key(key.encode(), password=None)
+        else:
+            raw = base64.urlsafe_b64decode("".join(key.split()) + "=" * (-len("".join(key.split())) % 4))
+            if len(raw) != 32:
+                result["private_error"] = "length"
+                return result
+            private_key = ec.derive_private_key(int.from_bytes(raw, "big"), ec.SECP256R1())
+        result["private_valid"] = True
+        if public_key is not None:
+            result["keys_match"] = (
+                private_key.public_key().public_numbers() == public_key.public_numbers())
+    except Exception:
+        result["private_error"] = "decode"
+    return result
+
 def build_router(tx, current):
     router = APIRouter(prefix="/api/push", tags=["notifications"])
 
     @router.get("/config")
     def config(user=Depends(current)):
         public_key = os.getenv("POLICEM_VAPID_PUBLIC_KEY", "")
-        return {"enabled": bool(public_key), "public_key": public_key, "test_enabled": os.getenv("RENDER_SERVICE_NAME") == "policem12-push-test"}
+        test = os.getenv("RENDER_SERVICE_NAME") == "policem12-push-test"
+        if test:
+            logging.getLogger("uvicorn.error").warning("VAPID diagnostic: %s", vapid_diagnostic())
+        return {"enabled": bool(public_key), "public_key": public_key, "test_enabled": test}
 
     @router.post("/test")
     def test_notification(user=Depends(current)):
