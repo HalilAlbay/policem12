@@ -1,0 +1,29 @@
+name: Personnel regression tests
+on:
+  push:
+    branches:
+      - feature/notifications-foundation
+  workflow_dispatch:
+jobs:
+  staff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest httpx
+      - name: Compile Python
+        run: python -m compileall -q app.py push_job.py push_service.py notification_core.py
+      - name: Run isolated personnel tests
+        env:
+          RENDER_SERVICE_NAME: ''
+          POLICEM_ADMIN_PASSWORD: ''
+          POLICEM_VAPID_PUBLIC_KEY: ''
+          POLICEM_VAPID_PRIVATE_KEY: ''
+          POLICEM_VAPID_SUBJECT: ''
+        run: python -m pytest -q tests/test_staff_permissions.py
