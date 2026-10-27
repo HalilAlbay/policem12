@@ -41,6 +41,7 @@ def init():
   CREATE TABLE IF NOT EXISTS trusted_devices(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),label TEXT NOT NULL,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL,revoked_at INTEGER,UNIQUE(id,user_id));
   CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id,revoked_at);
   CREATE TABLE IF NOT EXISTS device_sessions(token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE,device_id TEXT NOT NULL REFERENCES trusted_devices(id));
+  CREATE TABLE IF NOT EXISTS refresh_sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),device_id TEXT REFERENCES trusted_devices(id),expires INTEGER NOT NULL,created_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS policies(id INTEGER PRIMARY KEY,agency_id INTEGER NOT NULL REFERENCES agencies(id),branch_id INTEGER REFERENCES branches(id),owner_user_id INTEGER REFERENCES users(id),seller_user_id INTEGER REFERENCES users(id),uploader_user_id INTEGER NOT NULL REFERENCES users(id),customer_name TEXT NOT NULL,policy_type TEXT NOT NULL,policy_number TEXT NOT NULL,insurer TEXT DEFAULT '',premium REAL NOT NULL DEFAULT 0,start_date TEXT NOT NULL,end_date TEXT NOT NULL,issued_date TEXT NOT NULL,tracking INTEGER NOT NULL DEFAULT 0,external INTEGER NOT NULL DEFAULT 0,document_path TEXT,renewed_from INTEGER REFERENCES policies(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(agency_id,insurer,policy_number));
   CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL UNIQUE REFERENCES policies(id),status TEXT NOT NULL DEFAULT 'bekliyor',updated_by INTEGER REFERENCES users(id),updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS reminders(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL REFERENCES policies(id),days_before INTEGER NOT NULL,channel TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(policy_id,days_before,channel));
@@ -136,6 +137,7 @@ class Login(BaseModel): username:str;password:str
 class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
 class DeviceRegister(BaseModel):label:str=Field(min_length=1,max_length=80);password:str
 class DeviceRevoke(BaseModel):password:str
+class RefreshEnroll(BaseModel):device_id:str;password:str
 class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
@@ -184,6 +186,7 @@ def change_password(data:PasswordChange,u=Depends(current)):
  with tx() as c:
   c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.new),u['id']))
   c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
+  c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(u['id'],))
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
 # Device inventory is NOT an authentication factor yet. No device bearer credentials are issued.
 @app.get('/api/security/devices')
@@ -206,6 +209,42 @@ def register_trusted_device(data:DeviceRegister,u=Depends(current)):
   audit(c,u['id'],'register','trusted_device',0,{'device_id':device_id})
  return {'id':device_id,'label':label,'created_at':now,'note':'Cihaz kaydı yapıldı; hızlı giriş henüz etkin değil'}
 
+@app.post('/api/security/refresh/enroll')
+def enroll_refresh(data:RefreshEnroll,request:Request,response:Response,u=Depends(current)):
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
+ with tx() as c:
+  d=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(data.device_id,u['id'])).fetchone()
+  if not d:raise HTTPException(404,'Cihaz bulunamadı')
+  raw=secrets.token_urlsafe(48)
+  now=int(time.time())
+  c.execute('INSERT INTO refresh_sessions(token_hash,user_id,device_id,expires,created_at) VALUES (?,?,?,?,?)',(hashlib.sha256(raw.encode()).hexdigest(),u['id'],data.device_id,now+30*86400,now))
+  audit(c,u['id'],'refresh_enroll','trusted_device',0,{'device_id':data.device_id})
+ response.set_cookie('policem_refresh',raw,httponly=True,secure=True,samesite='strict',max_age=30*86400,path='/api/security/refresh')
+ return {'ok':True}
+
+@app.post('/api/security/refresh')
+def refresh_session(request:Request,response:Response):
+ origin=request.headers.get('origin')
+ host=request.headers.get('host','')
+ if not origin or origin not in ('https://'+host,'http://localhost:8000','http://127.0.0.1:8000'):
+  raise HTTPException(403,'Kaynak doğrulanamadı')
+ raw=request.cookies.get('policem_refresh','')
+ if not raw:raise HTTPException(401,'Yenileme oturumu bulunamadı')
+ now=int(time.time())
+ with tx() as c:
+  record=c.execute('SELECT r.*,u.active,d.revoked_at FROM refresh_sessions r JOIN users u ON u.id=r.user_id JOIN trusted_devices d ON d.id=r.device_id WHERE r.token_hash=?',(hashlib.sha256(raw.encode()).hexdigest(),)).fetchone()
+  if not record or record['expires']<=now or record['active']!=1 or record['revoked_at'] is not None:
+   raise HTTPException(401,'Yenileme oturumu geçersiz')
+  c.execute('DELETE FROM refresh_sessions WHERE token_hash=?',(record['token_hash'],))
+  new_refresh=secrets.token_urlsafe(48)
+  c.execute('INSERT INTO refresh_sessions(token_hash,user_id,device_id,expires,created_at) VALUES (?,?,?,?,?)',(hashlib.sha256(new_refresh.encode()).hexdigest(),record['user_id'],record['device_id'],now+30*86400,now))
+  token=secrets.token_urlsafe(40)
+  token_hash=hashlib.sha256(token.encode()).hexdigest()
+  c.execute('INSERT INTO sessions VALUES (?,?,?)',(token_hash,record['user_id'],now+86400))
+  c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,record['device_id']))
+ response.set_cookie('policem_refresh',new_refresh,httponly=True,secure=True,samesite='strict',max_age=30*86400,path='/api/security/refresh')
+ return {'token':token}
+
 @app.post('/api/security/devices/{device_id}/bind')
 def bind_device_session(device_id:str,data:DeviceRevoke,request:Request,u=Depends(current)):
  if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
@@ -227,6 +266,7 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE id=? AND user_id=?',(int(time.time()),device_id,u['id']))
   c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device_id,))
   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
+  c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device_id,))
   audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
  return {'ok':True,'note':'Cihaz ve bağlı oturumları iptal edildi; bağlanmamış eski oturumlar etkilenmez'}
 
