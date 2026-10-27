@@ -1,6 +1,6 @@
 # Secure login database migration plan
 
-Status: **P1 additive SQLite migration implemented; later phases append exact DDL before use.**
+Status: **P1–P6 additive SQLite migrations implemented; no live database was touched.**
 Baseline schema: `app.init()` at `d577d2a03a81a4f4cb79d4b39cde223ba79533e3`.
 Database path remains `POLICEM_DATA/policem.sqlite3`; no live/Render database is used.
 
@@ -70,3 +70,16 @@ For each addition: include exact SQL, foreign keys, indexes, constraints, retent
 ## P5 migration result
 
 The additive v5 migration adds `users.must_change_password INTEGER NOT NULL DEFAULT 0`, nullable `users.email_verified_at`, nullable `users.pending_email`, and `account_tokens` with hashed token primary key, purpose constraint, owner, email, creation/expiry/consumption timestamps, and an expiry index. Existing email addresses are unverified (`email_verified_at=NULL`) and existing users retain password login. Verification links expire after 24 hours; password reset links expire after 30 minutes. Expired token rows are pruned without touching account/business records. `auth_schema_meta.version` advances to 5.
+
+## P6 push-subscription migration result
+
+The push module independently and idempotently adds nullable `push_subscriptions.device_id` (foreign key to `trusted_devices`) and `push_subscriptions.active INTEGER NOT NULL DEFAULT 0`, plus `idx_push_user_device_active(user_id,device_id,active)`. It does not advance the authentication schema marker. Existing subscriptions and endpoint/key data remain stored, but are deliberately inactive and unbound until a verified device session explicitly re-registers the already-permitted browser subscription. Fresh subscriptions are bound to the current device session and start active. Logout and device revoke deactivate that device's rows. No push delivery worker can select a legacy/unbound/inactive subscription. No subscription from another user is changed. The legacy fixture test verifies preserved row data and inactive migration; endpoint, scheduler, logout, and revoke tests exercise the new state.
+
+P6 migration SQL equivalent (the implementation guards each column with `PRAGMA table_info`):
+
+```sql
+ALTER TABLE push_subscriptions ADD COLUMN device_id TEXT REFERENCES trusted_devices(id);
+ALTER TABLE push_subscriptions ADD COLUMN active INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_push_user_device_active
+  ON push_subscriptions(user_id,device_id,active);
+```

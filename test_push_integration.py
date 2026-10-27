@@ -157,6 +157,29 @@ class PushIntegrationTests(unittest.TestCase):
             self.assertEqual(push_job.tick(TODAY)["sent"],1)
             self.assertEqual(send.call_count,1)
 
+    def test_authenticated_device_reactivation_rebinds_only_same_users_endpoint(self):
+        self.subscribe()
+        token='authorized-transfer-session'
+        token_hash=hashlib.sha256(token.encode()).hexdigest()
+        with app.tx() as c:
+            c.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',(token_hash,self.user1,4102444800))
+            c.execute("INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen,installation_id) VALUES ('device-u1-transfer',?,'Replacement',1,1,'install-u1-transfer')",(self.user1,))
+            c.execute("INSERT INTO device_sessions(token_hash,device_id) VALUES (?,'device-u1-transfer')",(token_hash,))
+            c.execute("INSERT INTO device_login_settings(installation_id,user_id,device_id,method,updated_at) VALUES ('install-u1-transfer',?,'device-u1-transfer','webauthn',1)",(self.user1,))
+        response=self.client.post('/api/push/subscribe',headers={'Authorization':'Bearer '+token},
+                                  json={'endpoint':ENDPOINT,'keys':KEYS})
+        self.assertEqual(response.status_code,200,response.text)
+        with app.tx() as c:
+            row=c.execute('SELECT user_id,device_id,active FROM push_subscriptions WHERE endpoint=?',(ENDPOINT,)).fetchone()
+        self.assertEqual((row['user_id'],row['device_id'],row['active']),
+                         (self.user1,'device-u1-transfer',1))
+        self.request('POST','/api/logout')
+        with app.tx() as c:
+            self.assertEqual(c.execute('SELECT active FROM push_subscriptions WHERE endpoint=?',(ENDPOINT,)).fetchone()[0],1)
+        with patch.object(push_job,"send_push") as send:
+            self.assertEqual(push_job.tick(TODAY)["sent"],1)
+            self.assertEqual(send.call_count,1)
+
     def test_closed_renewal_not_sent(self):
         self.subscribe()
         with app.tx() as c:

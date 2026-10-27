@@ -97,6 +97,14 @@ Baseline checkpoint/rollback SHA: `d577d2a03a81a4f4cb79d4b39cde223ba79533e3`. P0
 
 Baseline pytest is now **reproducible but has seven pre-existing failures**. Under the final specification this does not stop independent stages; each failure will be tracked and rerun after relevant work. Acceptance mapping: AUTH/DEV/WEB/PIN/UI/REC/MIG/SEC are unverified; PIN proof remains an open security investigation; REG has executable tests; PUSH tests exist and will be rerun when P6 is implemented; manual iPhone acceptance is pending user by definition. Exact command/output and counts are in `SECURE_LOGIN_TEST_REPORT.md`.
 
+## G. Final implementation status (2026-10-28)
+
+The sections above are the P0 snapshot and its then-current risk statements. They are historical; implementation and verification advanced through P1–P7 on `feature/secure-easy-login`. See `SECURE_LOGIN_HANDOFF.md` for the final commit map and boundaries. P1–P6 code and focused automated checks are complete; the final full suite has 59 passed and the same six pre-existing failures (five stale staff/branding expectations and the 30-day notification expectation). No failures were skipped or hidden.
+
+Server-verifiable WebAuthn, device-proof PIN, mutually exclusive per-installation method selection, scoped password recovery, and device-bound push recipient selection are implemented with focused automated evidence. This is not a claim of iPhone acceptance: real Safari/Home Screen PWA behavior, WebAuthn/Face ID prompt, PIN key persistence in Safari, email delivery, production origin/RP setup, VAPID delivery, and persistent-database backup are still pending their external prerequisites/user test. Each method fails closed when required server configuration or proof is absent; account password remains the fallback. No Render environment or service was changed.
+
+Protected stable SHA remains `d6350ee5a013c9f192800154971e787684419be4`; rollback checkpoint is the original feature-branch source `d577d2a03a81a4f4cb79d4b39cde223ba79533e`. Neither was checked out, modified, merged, or deployed.
+
 ## P0 gate
 
 The final specification's P0 inspection is complete: branch/HEAD/status, existing P0, route/schema/UI inventory, tenant relationships, push flow, threat map, affected/protected files, and reproducible baseline test outcomes are recorded. P0 commit: `6582a2ced6e3ea7d1a054579d8de49821e320a13`. Baseline failures remain open work; per the final specification they do not block P1. Do not interpret syntax checks as passing functional tests.
