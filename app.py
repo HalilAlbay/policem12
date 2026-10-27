@@ -236,6 +236,14 @@ def enroll_refresh(data:RefreshEnroll,request:Request,response:Response,u=Depend
  response.set_cookie('policem_refresh',raw,httponly=True,secure=True,samesite='strict',max_age=30*86400,path='/api/security/refresh')
  return {'ok':True}
 
+@app.post('/api/security/refresh/logout')
+def logout_refresh(request:Request,response:Response):
+ raw=request.cookies.get('policem_refresh','')
+ if raw:
+  with tx() as c:c.execute('DELETE FROM refresh_sessions WHERE token_hash=?',(hashlib.sha256(raw.encode()).hexdigest(),))
+ response.delete_cookie('policem_refresh',path='/api/security/refresh',secure=True,samesite='strict',httponly=True)
+ return {'ok':True}
+
 @app.post('/api/security/refresh')
 def refresh_session(data:PinRefresh,request:Request,response:Response):
  origin=request.headers.get('origin')
