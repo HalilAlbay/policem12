@@ -27,7 +27,7 @@ async function policemDisablePush() {
 }
 function policemPushControls() {
   if (document.getElementById('policem-push-settings')) return;
-  const target = document.getElementById('home');
+  const target = document.getElementById('settings');
   if (!target) return;
   const box = document.createElement('div');
   box.id='policem-push-settings'; box.className='card';
@@ -55,7 +55,7 @@ function policemPushControls() {
   box.prepend(heading,note);box.appendChild(testBtn,status);target.appendChild(box);
 }
 document.addEventListener('DOMContentLoaded',()=>{const timer=setInterval(()=>{
-  if(document.getElementById('home')){clearInterval(timer);policemPushControls();}
+  if(document.getElementById('settings')){clearInterval(timer);policemPushControls();}
 },150);});
 
 /* Re-register an existing opt-in subscription on authenticated app boot.
