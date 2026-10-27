@@ -2,7 +2,7 @@ self.addEventListener('push', event => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_) {}
   const days = Number(data.days_before);
-  const body = [30, 15, 7, 1].includes(days)
+  const body = [15, 7, 1].includes(days)
     ? 'Takibinizdeki bir poliçenin bitişine ' + days + ' gün kaldı.'
     : 'Yeni yenileme hatırlatmanız var.';
   event.waitUntil(self.registration.showNotification('Poliçem', {
