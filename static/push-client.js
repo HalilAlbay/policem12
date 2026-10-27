@@ -41,7 +41,18 @@ function policemPushControls() {
     btn.addEventListener('click', async()=>{try{status.textContent=await action()}catch(e){status.textContent=e.message}});
     box.appendChild(btn);
   }
-  box.prepend(heading,note);box.appendChild(status);target.appendChild(box);
+  const testBtn=document.createElement('button');
+  testBtn.textContent='Test bildirimi gönder';
+  testBtn.style.marginTop='8px';
+  testBtn.addEventListener('click',async()=>{
+    try {
+      const cfg=await api('push/config');
+      if(!cfg.test_enabled) throw Error('Test gönderimi bu ortamda kapalı.');
+      const result=await api('push/test','POST',{});
+      status.textContent='Test bildirimi gönderildi ('+result.sent+' cihaz).';
+    } catch(e) {status.textContent=e.message;}
+  });
+  box.prepend(heading,note);box.appendChild(testBtn,status);target.appendChild(box);
 }
 document.addEventListener('DOMContentLoaded',()=>{const timer=setInterval(()=>{
   if(document.getElementById('home')){clearInterval(timer);policemPushControls();}
