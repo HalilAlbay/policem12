@@ -42,6 +42,7 @@ def init():
   CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id,revoked_at);
   CREATE TABLE IF NOT EXISTS device_sessions(token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE,device_id TEXT NOT NULL REFERENCES trusted_devices(id));
   CREATE TABLE IF NOT EXISTS refresh_sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),device_id TEXT REFERENCES trusted_devices(id),expires INTEGER NOT NULL,created_at INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS device_pin(device_id TEXT PRIMARY KEY REFERENCES trusted_devices(id),pin_hash TEXT NOT NULL,failures INTEGER NOT NULL DEFAULT 0,locked_at INTEGER);
   CREATE TABLE IF NOT EXISTS policies(id INTEGER PRIMARY KEY,agency_id INTEGER NOT NULL REFERENCES agencies(id),branch_id INTEGER REFERENCES branches(id),owner_user_id INTEGER REFERENCES users(id),seller_user_id INTEGER REFERENCES users(id),uploader_user_id INTEGER NOT NULL REFERENCES users(id),customer_name TEXT NOT NULL,policy_type TEXT NOT NULL,policy_number TEXT NOT NULL,insurer TEXT DEFAULT '',premium REAL NOT NULL DEFAULT 0,start_date TEXT NOT NULL,end_date TEXT NOT NULL,issued_date TEXT NOT NULL,tracking INTEGER NOT NULL DEFAULT 0,external INTEGER NOT NULL DEFAULT 0,document_path TEXT,renewed_from INTEGER REFERENCES policies(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(agency_id,insurer,policy_number));
   CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL UNIQUE REFERENCES policies(id),status TEXT NOT NULL DEFAULT 'bekliyor',updated_by INTEGER REFERENCES users(id),updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS reminders(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL REFERENCES policies(id),days_before INTEGER NOT NULL,channel TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(policy_id,days_before,channel));
@@ -138,6 +139,8 @@ class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
 class DeviceRegister(BaseModel):label:str=Field(min_length=1,max_length=80);password:str
 class DeviceRevoke(BaseModel):password:str
 class RefreshEnroll(BaseModel):device_id:str;password:str
+class PinEnroll(BaseModel):device_id:str;password:str;pin:str
+class PinRefresh(BaseModel):pin:str
 class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
@@ -209,6 +212,17 @@ def register_trusted_device(data:DeviceRegister,u=Depends(current)):
   audit(c,u['id'],'register','trusted_device',0,{'device_id':device_id})
  return {'id':device_id,'label':label,'created_at':now,'note':'Cihaz kaydı yapıldı; hızlı giriş henüz etkin değil'}
 
+@app.post('/api/security/pin/enroll')
+def enroll_pin(data:PinEnroll,u=Depends(current)):
+ if not re.fullmatch(r'[0-9]{4}',data.pin):raise HTTPException(400,'PIN dört rakam olmalı')
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
+ with tx() as c:
+  device=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(data.device_id,u['id'])).fetchone()
+  if not device:raise HTTPException(404,'Cihaz bulunamadı')
+  c.execute('INSERT INTO device_pin(device_id,pin_hash,failures,locked_at) VALUES (?,?,0,NULL) ON CONFLICT(device_id) DO UPDATE SET pin_hash=excluded.pin_hash,failures=0,locked_at=NULL',(data.device_id,password_hash(data.pin)))
+  audit(c,u['id'],'pin_enroll','trusted_device',0,{'device_id':data.device_id})
+ return {'ok':True}
+
 @app.post('/api/security/refresh/enroll')
 def enroll_refresh(data:RefreshEnroll,request:Request,response:Response,u=Depends(current)):
  if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
@@ -223,7 +237,7 @@ def enroll_refresh(data:RefreshEnroll,request:Request,response:Response,u=Depend
  return {'ok':True}
 
 @app.post('/api/security/refresh')
-def refresh_session(request:Request,response:Response):
+def refresh_session(data:PinRefresh,request:Request,response:Response):
  origin=request.headers.get('origin')
  host=request.headers.get('host','')
  if not origin or origin not in ('https://'+host,'http://localhost:8000','http://127.0.0.1:8000'):
@@ -235,6 +249,15 @@ def refresh_session(request:Request,response:Response):
   record=c.execute('SELECT r.*,u.active,d.revoked_at FROM refresh_sessions r JOIN users u ON u.id=r.user_id JOIN trusted_devices d ON d.id=r.device_id WHERE r.token_hash=?',(hashlib.sha256(raw.encode()).hexdigest(),)).fetchone()
   if not record or record['expires']<=now or record['active']!=1 or record['revoked_at'] is not None:
    raise HTTPException(401,'Yenileme oturumu geçersiz')
+  pinrow=c.execute('SELECT pin_hash,failures,locked_at FROM device_pin WHERE device_id=?',(record['device_id'],)).fetchone()
+  if not pinrow or pinrow['locked_at'] is not None:raise HTTPException(403,'PIN kilitli; şifreyle giriş yapın')
+  if not check_pw(data.pin,pinrow['pin_hash']):
+   failures=pinrow['failures']+1
+   c.execute('UPDATE device_pin SET failures=?,locked_at=? WHERE device_id=?',(failures,now if failures>=5 else None,record['device_id']))
+   # tx() rolls back on exceptions; commit failed-attempt counters explicitly before returning.
+   c.commit()
+   raise HTTPException(403,'PIN hatalı')
+  c.execute('UPDATE device_pin SET failures=0 WHERE device_id=?',(record['device_id'],))
   c.execute('DELETE FROM refresh_sessions WHERE token_hash=?',(record['token_hash'],))
   new_refresh=secrets.token_urlsafe(48)
   c.execute('INSERT INTO refresh_sessions(token_hash,user_id,device_id,expires,created_at) VALUES (?,?,?,?,?)',(hashlib.sha256(new_refresh.encode()).hexdigest(),record['user_id'],record['device_id'],now+30*86400,now))
@@ -267,6 +290,7 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device_id,))
   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device_id,))
+  c.execute('DELETE FROM device_pin WHERE device_id=?',(device_id,))
   audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
  return {'ok':True,'note':'Cihaz ve bağlı oturumları iptal edildi; bağlanmamış eski oturumlar etkilenmez'}
 
