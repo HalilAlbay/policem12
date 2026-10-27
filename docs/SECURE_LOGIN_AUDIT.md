@@ -1,8 +1,8 @@
 # Secure login pre-flight audit (P0)
 
 Date: 2026-10-28 (Europe/Istanbul)
-Contract: `CODEX_SECURE_LOGIN_EXECUTION_CONTRACT_V2.md` at `feature/secure-easy-login`
-Audit status: **P0 gate blocked; implementation has not started.**
+Contract: `POLICEM_CODEX_NIHAI_SARTNAME.md` (user-provided final specification; supersedes conflicting V2 requirements)
+Audit status: **P0 verified; P1 may proceed.**
 
 ## A. Checkout and verified baseline
 
@@ -14,7 +14,7 @@ Audit status: **P0 gate blocked; implementation has not started.**
 - `git status --porcelain=v1` was empty at checkout; branch was tracking `origin/feature/secure-easy-login`.
 - Protected known-good SHA supplied by the contract: `d6350ee5a013c9f192800154971e787684419be4`. The protected branch was not checked out or modified.
 - Test Render: `policem12-push-test` (`srv-dbg5ak4s728c73de7j0g`); no deploy or Render access performed.
-- P0 files inspected: `app.py`, `customer_portal.py`, `static/index.html`, `static/push-client.js`, `static/push-sw.js`, `push_service.py`, `push_job.py`, `notification_core.py`, `requirements.txt`, all files under `tests/`, both GitHub workflow files, and `docs/SECURE_EASY_LOGIN_PLAN.md`.
+- P0 files inspected: `app.py`, `customer_portal.py`, `static/index.html`, `static/push-client.js`, `static/push-sw.js`, `push_service.py`, `push_job.py`, `notification_core.py`, `requirements.txt`, all eight root/subdirectory `test*.py` files, both GitHub workflow files, and `docs/SECURE_EASY_LOGIN_PLAN.md`.
 
 ### Routes and handlers
 
@@ -32,11 +32,11 @@ Audit status: **P0 gate blocked; implementation has not started.**
 - The client `api()` attaches the bearer token to protected fetches. `logout()` fires refresh invalidation without awaiting it, clears only the access token locally, and reloads. `boot()` calls `/api/me` and `/api/organization`; there is no 15-minute client lock, server idle timeout, or transient form wipe behavior.
 - `push-client.js` contains `policemVapidBytes`, `policemEnablePush`, `policemDisablePush`, `policemPushControls`, `policemSyncExistingPush`; service worker is `push-sw.js`. `push_job.tick()` selects subscriptions by policy owner ID, with no active-device/logout eligibility filter. Scheduler work is separate from user session startup.
 - Config observed in code: `POLICEM_DATA`, `POLICEM_ADMIN_PASSWORD`, `POLICEM_SETUP_KEY`, `RENDER_SERVICE_NAME`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USER`, `SMTP_PASSWORD`, and `POLICEM_VAPID_PUBLIC_KEY`, `POLICEM_VAPID_PRIVATE_KEY`, `POLICEM_VAPID_SUBJECT`. No canonical public origin or WebAuthn RP ID configuration exists. Existing reminder SMTP is not verified-email recovery.
-- `requirements.txt` has FastAPI, Uvicorn, multipart, PyMuPDF, Pydantic, Pillow, and pywebpush; no pytest/httpx declaration and no WebAuthn library. Tests in this checkout are `tests/test_device_sessions.py`, `tests/test_quick_login.py`, `tests/test_staff_permissions.py`; there are no test files referenced by the push workflow (`test_notification_core`, etc.) in this branch.
+- `requirements.txt` has FastAPI, Uvicorn, multipart, PyMuPDF, Pydantic, Pillow, and pywebpush; no pytest/httpx declaration and no WebAuthn library. Pytest files are `test_app.py`, `test_deployment.py`, `test_notification_core.py`, `test_push_service.py`, `test_push_integration.py`, `tests/test_device_sessions.py`, `tests/test_quick_login.py`, and `tests/test_staff_permissions.py`. The earlier note that several root-level tests were absent was incorrect; those files exist and were discovered by full `pytest` collection.
 
 ## B. File ownership and proposed function-level map
 
-No feature code change is authorized until P0 passes. Expected future scope, subject to each gate:
+P0 confirms the existing scope. Expected future changes are:
 
 - `app.py`: narrowly wire startup migration and routes; patch `current`, `login`, `logout`, `change_password`, `edit_user`, `reset_staff_password`, and security functions as justified by P1/P5. Preserve unrelated policy, customer and staff behavior.
 - New `auth_security.py` (or package): isolated session, challenge, WebAuthn, recovery, audit and rate-limit logic.
@@ -86,17 +86,17 @@ External/runtime prerequisites not present in code: canonical HTTPS public origi
 
 ## F. Baseline tests, rollback, and acceptance mapping
 
-Baseline checkpoint/rollback SHA: `d577d2a03a81a4f4cb79d4b39cde223ba79533e3` (P0 docs commit will be its child; revert that docs-only commit to return to the inspected source tree).
+Baseline checkpoint/rollback SHA: `d577d2a03a81a4f4cb79d4b39cde223ba79533e3`. P0 record commit: `6582a2ced6e3ea7d1a054579d8de49821e320a13`.
 
 | Command | Environment/result |
 |---|---|
-| `python -m pytest -q` | Exit 1: host Python 3.11 has no `pytest` module. |
-| `.venv\\Scripts\\python.exe -m pip install -r requirements.txt pytest httpx` | Exit 1: package index returned no available versions for `pytest`; dependencies were not installed. Isolated `.venv` was used and is removed before commit. |
-| `.venv\\Scripts\\python.exe -m pytest -q` | Exit 1: `No module named pytest`. |
-| `py -3.12 -m compileall -q app.py customer_portal.py notification_core.py push_job.py push_service.py windows_main.py` | Exit 0: Python syntax compilation passed. |
+| `py -3.12 -m venv .venv; .venv\\Scripts\\python.exe -m pip install --no-cache-dir -r requirements.txt pytest httpx` | Exit 0: dependencies installed in an isolated checkout-local environment after an initial transient package-index failure. |
+| `.venv\\Scripts\\python.exe -m pytest -q` | Exit 1: **32 passed, 7 failed, 19 warnings** in 13.28s on unchanged source `d577d2a`. Failures: 5 `test_app.py` cases expect staff creation without currently-required phone/start_date and/or expect old branding; `test_notification_core.py::test_all_milestones` expects a 30-day notification absent from current scheduler; `tests/test_quick_login.py::test_pin_refresh_and_lockout` expects a Secure cookie over plain HTTP TestClient, so no refresh cookie reaches the endpoint. These are recorded baseline failures, not silently skipped. |
+| `.venv\\Scripts\\python.exe -m compileall -q app.py customer_portal.py notification_core.py push_job.py push_service.py windows_main.py tests test_app.py test_deployment.py` | Exit 0: all Python files compiled. |
+| `node --check static/push-client.js` | Exit 0: existing push client syntax passed. |
 
-Baseline test suite remains **unexecuted**, not passed. P0 gate requires reproducible automated baseline results, so it is blocked. No P1+ work has started. Acceptance mapping: AUTH/DEV/WEB/PIN/UI/REC/MIG/SEC are unverified; PIN is security-blocked as above; REG staff has test files but not run; PUSH recipient behavior conflicts with DEC-05 and existing push tests are absent from this branch; manual iPhone acceptance is pending user by definition. Exact command/output and counts are in `SECURE_LOGIN_TEST_REPORT.md`.
+Baseline pytest is now **reproducible but has seven pre-existing failures**. Under the final specification this does not stop independent stages; each failure will be tracked and rerun after relevant work. Acceptance mapping: AUTH/DEV/WEB/PIN/UI/REC/MIG/SEC are unverified; PIN proof remains an open security investigation; REG has executable tests; PUSH tests exist and will be rerun when P6 is implemented; manual iPhone acceptance is pending user by definition. Exact command/output and counts are in `SECURE_LOGIN_TEST_REPORT.md`.
 
 ## P0 gate
 
-The source inventory and risk audit are complete, and this report records the baseline failure. The contract's P0 gate is **NOT PASSED** because its automated baseline cannot be run in the available environment. Accordingly no implementation stage may begin. Do not interpret a successful syntax-only compile as passing tests.
+The final specification's P0 inspection is complete: branch/HEAD/status, existing P0, route/schema/UI inventory, tenant relationships, push flow, threat map, affected/protected files, and reproducible baseline test outcomes are recorded. P0 commit: `6582a2ced6e3ea7d1a054579d8de49821e320a13`. Baseline failures remain open work; per the final specification they do not block P1. Do not interpret syntax checks as passing functional tests.
