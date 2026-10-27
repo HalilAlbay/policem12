@@ -60,4 +60,4 @@ async function loadAudit(){await safe(async()=>{let a=await api('audit');$('audi
 async function changePassword(){await safe(async()=>{await api('password','POST',{old:$('oldPw').value,new:$('newPw').value});alert('Şifre değiştirildi. Tekrar giriş yapın.');logout()})}
 async function saveTheme(){await safe(async()=>{await api('theme','POST',{theme:$('theme').value});document.documentElement.style.setProperty('--brand',$('theme').value);msg('Renk kaydedildi')})}
 refreshBranding().catch(()=>{});if(token)boot();else checkFirstSetup();
-</script></body></html>
+</script><script src="/static/push-client.js" defer></script></body></html>
