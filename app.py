@@ -41,10 +41,11 @@ def init():
   CREATE TABLE IF NOT EXISTS policies(id INTEGER PRIMARY KEY,agency_id INTEGER NOT NULL REFERENCES agencies(id),branch_id INTEGER REFERENCES branches(id),owner_user_id INTEGER REFERENCES users(id),seller_user_id INTEGER REFERENCES users(id),uploader_user_id INTEGER NOT NULL REFERENCES users(id),customer_name TEXT NOT NULL,policy_type TEXT NOT NULL,policy_number TEXT NOT NULL,insurer TEXT DEFAULT '',premium REAL NOT NULL DEFAULT 0,start_date TEXT NOT NULL,end_date TEXT NOT NULL,issued_date TEXT NOT NULL,tracking INTEGER NOT NULL DEFAULT 0,external INTEGER NOT NULL DEFAULT 0,document_path TEXT,renewed_from INTEGER REFERENCES policies(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(agency_id,insurer,policy_number));
   CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL UNIQUE REFERENCES policies(id),status TEXT NOT NULL DEFAULT 'bekliyor',updated_by INTEGER REFERENCES users(id),updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS reminders(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL REFERENCES policies(id),days_before INTEGER NOT NULL,channel TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(policy_id,days_before,channel));
-  CREATE TABLE IF NOT EXISTS branding(id INTEGER PRIMARY KEY CHECK(id=1),app_name TEXT NOT NULL DEFAULT 'Poliçem',color TEXT NOT NULL DEFAULT '#1755a2',icon_mime TEXT,icon_bytes BLOB);
-  INSERT OR IGNORE INTO branding(id,app_name,color) VALUES (1,'Poliçem','#1755a2');
+  CREATE TABLE IF NOT EXISTS branding(id INTEGER PRIMARY KEY CHECK(id=1),app_name TEXT NOT NULL DEFAULT 'Parantez Poliçem',color TEXT NOT NULL DEFAULT '#1755a2',icon_mime TEXT,icon_bytes BLOB);
+  INSERT OR IGNORE INTO branding(id,app_name,color) VALUES (1,'Parantez Poliçem','#1755a2');
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id INTEGER,payload TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
   ''')
+  c.execute("UPDATE branding SET app_name='Parantez Poliçem' WHERE id=1 AND app_name='Poliçem'")
   if not c.execute('SELECT 1 FROM agencies').fetchone():
    c.execute('INSERT INTO agencies(name) VALUES (?)',('Ana Acente',))
    c.execute('INSERT INTO branches(agency_id,name) VALUES (1,?)',('Merkez',))
@@ -374,9 +375,14 @@ def update_renewal(policy_id:int,data:RenewalUpdate,u=Depends(current)):
 @app.post('/api/transfer')
 def transfer(data:Transfer,u=Depends(require('partner','manager'))):
  with tx() as c:
-  ids=data.policy_ids or [x['id'] for x in c.execute('SELECT id FROM policies WHERE owner_user_id=?',(data.from_user_id,))]
+  if data.from_user_id == data.to_user_id: raise HTTPException(400,'Kaynak ve hedef personel aynı olamaz')
+  target=c.execute('SELECT id,active FROM users WHERE id=?',(data.to_user_id,)).fetchone()
+  if not target or not target['active']: raise HTTPException(400,'Hedef personel aktif olmalı')
+  source=c.execute('SELECT id FROM users WHERE id=?',(data.from_user_id,)).fetchone()
+  if not source: raise HTTPException(404,'Kaynak personel bulunamadı')
+  ids=data.policy_ids if data.policy_ids is not None else [x['id'] for x in c.execute('SELECT id FROM policies WHERE owner_user_id=?',(data.from_user_id,))]
   ids=[i for i in ids if c.execute('SELECT 1 FROM policies WHERE id=? AND owner_user_id=?',(i,data.from_user_id)).fetchone()]
-  for pid in ids:c.execute('UPDATE policies SET owner_user_id=? WHERE id=?',(data.to_user_id,pid))
+  for pid in ids:c.execute('UPDATE policies SET owner_user_id=?,seller_user_id=CASE WHEN seller_user_id=? THEN ? ELSE seller_user_id END WHERE id=?',(data.to_user_id,data.from_user_id,data.to_user_id,pid))
   audit(c,u['id'],'transfer','policies',None,{'from':data.from_user_id,'to':data.to_user_id,'ids':ids})
  return {'count':len(ids)}
 @app.get('/api/audit')
