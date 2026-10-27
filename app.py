@@ -152,7 +152,7 @@ def current(request:Request):
  if not auth.startswith('Bearer '): raise HTTPException(401,'Oturum açın')
  token=hashlib.sha256(auth[7:].encode()).hexdigest()
  with tx() as c:
-  u=c.execute('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.active=1',(token,int(time.time()))).fetchone()
+  u=c.execute('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN device_sessions ds ON ds.token_hash=s.token_hash LEFT JOIN trusted_devices d ON d.id=ds.device_id WHERE s.token_hash=? AND s.expires>? AND u.active=1 AND (ds.token_hash IS NULL OR (d.id IS NOT NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id))',(token,int(time.time()))).fetchone()
  if not u:raise HTTPException(401,'Oturum geçersiz')
  return dict(u)
 
