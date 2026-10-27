@@ -48,7 +48,8 @@ def tick(today=None):
                    JOIN policies p ON p.id=d.policy_id
                    LEFT JOIN renewals r ON r.policy_id=p.id
                    WHERE d.delivered_at IS NULL AND d.attempts<5
-                   AND p.tracking=1 AND COALESCE(r.status,'bekliyor') NOT IN ('policelestirildi','kaybedildi')
+                   AND p.tracking=1 AND s.user_id=p.owner_user_id
+                   AND COALESCE(r.status,'bekliyor') NOT IN ('policelestirildi','kaybedildi')
                    ORDER BY d.attempts,d.policy_id LIMIT 100""").fetchall()
     sent=0; failed=0
     for item in pending:
