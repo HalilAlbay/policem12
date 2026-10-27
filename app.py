@@ -38,6 +38,8 @@ def init():
   CREATE TABLE IF NOT EXISTS branches(id INTEGER PRIMARY KEY,agency_id INTEGER NOT NULL REFERENCES agencies(id),name TEXT NOT NULL,active INTEGER DEFAULT 1);
   CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,username TEXT UNIQUE NOT NULL,display_name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('partner','manager','staff')),password_hash TEXT NOT NULL,branch_id INTEGER REFERENCES branches(id),active INTEGER DEFAULT 1,theme TEXT DEFAULT '#1755a2',email TEXT);
   CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS trusted_devices(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),label TEXT NOT NULL,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL,revoked_at INTEGER,UNIQUE(id,user_id));
+  CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id,revoked_at);
   CREATE TABLE IF NOT EXISTS policies(id INTEGER PRIMARY KEY,agency_id INTEGER NOT NULL REFERENCES agencies(id),branch_id INTEGER REFERENCES branches(id),owner_user_id INTEGER REFERENCES users(id),seller_user_id INTEGER REFERENCES users(id),uploader_user_id INTEGER NOT NULL REFERENCES users(id),customer_name TEXT NOT NULL,policy_type TEXT NOT NULL,policy_number TEXT NOT NULL,insurer TEXT DEFAULT '',premium REAL NOT NULL DEFAULT 0,start_date TEXT NOT NULL,end_date TEXT NOT NULL,issued_date TEXT NOT NULL,tracking INTEGER NOT NULL DEFAULT 0,external INTEGER NOT NULL DEFAULT 0,document_path TEXT,renewed_from INTEGER REFERENCES policies(id),created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(agency_id,insurer,policy_number));
   CREATE TABLE IF NOT EXISTS renewals(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL UNIQUE REFERENCES policies(id),status TEXT NOT NULL DEFAULT 'bekliyor',updated_by INTEGER REFERENCES users(id),updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS reminders(id INTEGER PRIMARY KEY,policy_id INTEGER NOT NULL REFERENCES policies(id),days_before INTEGER NOT NULL,channel TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(policy_id,days_before,channel));
@@ -131,6 +133,8 @@ def setup_account(data:FirstAccount):
 
 class Login(BaseModel): username:str;password:str
 class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
+class DeviceRegister(BaseModel):label:str=Field(min_length=1,max_length=80);password:str
+class DeviceRevoke(BaseModel):password:str
 class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
@@ -180,6 +184,37 @@ def change_password(data:PasswordChange,u=Depends(current)):
   c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.new),u['id']))
   c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
+# Device inventory is NOT an authentication factor yet. No device bearer credentials are issued.
+@app.get('/api/security/devices')
+def list_trusted_devices(u=Depends(current)):
+ with tx() as c:
+  rows=c.execute('SELECT id,label,created_at,last_seen FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL ORDER BY created_at DESC',(u['id'],)).fetchall()
+ return {'devices':[dict(row) for row in rows]}
+
+@app.post('/api/security/devices')
+def register_trusted_device(data:DeviceRegister,u=Depends(current)):
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
+ label=data.label.strip()
+ if not label:raise HTTPException(400,'Cihaz adı gerekli')
+ device_id=secrets.token_urlsafe(24)
+ now=int(time.time())
+ with tx() as c:
+  count=c.execute('SELECT COUNT(*) FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL',(u['id'],)).fetchone()[0]
+  if count>=10:raise HTTPException(409,'En fazla 10 güvenilir cihaz kaydedilebilir')
+  c.execute('INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen) VALUES (?,?,?,?,?)',(device_id,u['id'],label,now,now))
+  audit(c,u['id'],'register','trusted_device',0,{'device_id':device_id})
+ return {'id':device_id,'label':label,'created_at':now,'note':'Cihaz kaydı yapıldı; hızlı giriş henüz etkin değil'}
+
+@app.post('/api/security/devices/{device_id}/revoke')
+def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
+ with tx() as c:
+  row=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(device_id,u['id'])).fetchone()
+  if not row:raise HTTPException(404,'Cihaz bulunamadı')
+  c.execute('UPDATE trusted_devices SET revoked_at=? WHERE id=? AND user_id=?',(int(time.time()),device_id,u['id']))
+  audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
+ return {'ok':True,'note':'Cihaz kaydı iptal edildi; mevcut klasik oturumlar bu kayda bağlı değildir'}
+
 @app.post('/api/theme')
 def theme(data:Theme,u=Depends(current)):
  if not re.fullmatch(r'#[0-9a-fA-F]{6}',data.theme):raise HTTPException(400,'Renk geçersiz')
