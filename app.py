@@ -86,7 +86,7 @@ def startup():
      logging.getLogger("uvicorn.error").info("Policy expiry push tick: %s",result)
     except Exception:
      logging.getLogger("uvicorn.error").exception("Policy expiry push tick failed")
-    time.sleep(3600)
+    time.sleep(900)
   threading.Thread(target=expiry_push_loop,daemon=True,name="policem-expiry-push").start()
 @app.get('/api/health')
 def health():
