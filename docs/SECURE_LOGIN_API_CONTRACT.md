@@ -2,13 +2,14 @@
 
 Status: **P1 contract (implemented surface will be updated in each later stage).**
 Baseline: `d577d2a03a81a4f4cb79d4b39cde223ba79533e3`.
-Canonical browser origin is not yet configured; cookie-backed endpoints fail closed until it is.
+Cookie-backed endpoints require `POLICEM_PUBLIC_ORIGIN` to equal the request's exact Origin; explicit local tests can use `POLICEM_DEV_MODE=1` and the two fixed localhost origins. The canonical production origin is not configured in this checkout, so production cookie/WebAuthn/recovery flows remain disabled until an owner supplies the actual value.
 
 ## Common rules
 
 - JSON errors use `{"detail":{"code":"..."}}` for new security states; no token, PIN, password, challenge, signature, or stack trace is returned. Existing legacy auth failures retain their generic Turkish detail for compatibility.
 - `Authorization: Bearer <access token>` is required for protected endpoints unless a later endpoint is explicitly described as a pre-authentication flow. Access and refresh credentials are never put in URLs.
 - Only requests carrying `X-User-Interaction: 1`, set by the client after a real local click/key/touch interaction, advance server idle activity. Background requests do not extend the session. A session idle for 900 seconds is denied with HTTP 401 `SESSION_IDLE`.
+- Login throttling is durable: 5 failed attempts per normalized username and 30 per source IP in a 15-minute window. Scope values are hashed before persistence; success clears the username bucket. Failure responses remain generic and identical for unknown/inactive and wrong-password accounts.
 - Password step-up requires the current account password, compared server-side. Foreign device/credential IDs return 404. Mutating operations are transactional and audit outcomes without secrets.
 - Once the canonical public origin is configured, cookie endpoints compare the exact `Origin` with that configured origin; arbitrary `Host` is not trusted. Cookie flows use HttpOnly, Secure, SameSite=Strict, path-scoped cookies. No wildcard origin is accepted.
 - Expected statuses: 200 success; 201 resource created; 204 success with no body; 400 malformed/domain-invalid data; 401 missing/invalid/idle auth; 403 authenticated but forbidden or failed step-up; 404 unknown/foreign resource; 409 conflict/capacity/replay; 422 Pydantic validation; 429 durable rate limit; 503 security method unavailable/configuration missing. Error detail is generic.
@@ -43,3 +44,11 @@ P2 will specify passkey registration/login begin/finish routes with challenge ID
 4. Make logout await server revocation and clear local credentials; make device revoke atomic across bound session/refresh/PIN records.
 5. Disable current cookie+PIN refresh until P3 implements and tests independent device possession proof.
 6. Add targeted tests for idle boundary, no background extension, lockout persistence, logout, device revoke, and durable login throttling; rerun full baseline and report existing failures separately.
+
+## P1 implementation result
+
+- `sessions.last_activity`, `auth_attempts`, and the version marker are additive/idempotent. First security-schema initialization revokes the unsafe prototype trusted-device state, removes bound access/refresh/PIN proof rows, preserves unbound password sessions and business data, and emits a secret-free audit event.
+- Password login creates server-timed idle state, bounds inputs, uses a dummy PBKDF2 hash for unknown usernames, and applies the durable username/IP limits above. Every protected API reaches the same 900-second server check through `current()`.
+- The client tracks real pointer/key/touch input, sends a throttled activity request, locks at the deadline, clears form/select/file data and modals, and broadcasts lock/logout/activity across tabs. API-originated idle denial locks even when the browser timer was suspended.
+- The legacy cookie+PIN enrollment and refresh endpoints return 503 `METHOD_UNAVAILABLE`; Settings shows password-only and explicitly labels PIN unavailable. This is a fail-closed interim state until P3 device possession proof is implemented; no quick-login success is claimed.
+- Focused checks: 19 passed. Full suite after P1: 40 passed, 6 failed, 33 warnings. The six failures are the baseline staff API fixture (five outdated expectations) and the existing 30-day notification test; see `SECURE_LOGIN_TEST_REPORT.md`.

@@ -50,6 +50,28 @@ def init():
   INSERT OR IGNORE INTO branding(id,app_name,color) VALUES (1,'Parantez Poliçem','#1755a2');
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id INTEGER,payload TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
   ''')
+  session_cols={x['name'] for x in c.execute('PRAGMA table_info(sessions)')}
+  added_activity='last_activity' not in session_cols
+  if added_activity:
+   c.execute('ALTER TABLE sessions ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0')
+  security_meta_exists=bool(c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='auth_schema_meta'").fetchone())
+  c.execute('''CREATE TABLE IF NOT EXISTS auth_schema_meta(
+    id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL)''')
+  c.execute('INSERT OR IGNORE INTO auth_schema_meta(id,version) VALUES (1,1)')
+  c.execute('''CREATE TABLE IF NOT EXISTS auth_attempts(
+    scope_hash TEXT PRIMARY KEY,attempts INTEGER NOT NULL CHECK(attempts>=0),
+    window_started INTEGER NOT NULL,updated_at INTEGER NOT NULL)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_auth_attempts_updated ON auth_attempts(updated_at)')
+  if added_activity:
+   c.execute('UPDATE sessions SET last_activity=? WHERE expires>?',(int(time.time()),int(time.time())))
+  if not security_meta_exists:
+   revoked=c.execute('SELECT COUNT(*) FROM trusted_devices WHERE revoked_at IS NULL').fetchone()[0]
+   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE revoked_at IS NULL',(int(time.time()),))
+   c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions)')
+   c.execute('DELETE FROM refresh_sessions')
+   c.execute('DELETE FROM device_pin')
+   if revoked:audit(c,None,'legacy_quick_login_revoked','trusted_device',None,{'count':revoked})
+  c.execute('DELETE FROM auth_attempts WHERE updated_at<?',(int(time.time())-86400,))
   c.execute("UPDATE branding SET app_name='Parantez Poliçem' WHERE id=1 AND app_name='Poliçem'")
   cols={x['name'] for x in c.execute('PRAGMA table_info(users)')}
   if 'phone' not in cols:c.execute('ALTER TABLE users ADD COLUMN phone TEXT')
@@ -72,6 +94,8 @@ def check_pw(pw,stored):
   salt,expected=stored.split(':');actual=hashlib.pbkdf2_hmac('sha256',pw.encode(),bytes.fromhex(salt),350000)
   return hmac.compare_digest(actual,bytes.fromhex(expected))
  except: return False
+
+DUMMY_PASSWORD_HASH=password_hash('constant-time-login-placeholder')
 
 def audit(c,user,action,entity,eid,payload=None):
  c.execute('INSERT INTO audit(actor,action,entity,entity_id,payload) VALUES (?,?,?,?,?)',(user,action,entity,eid,json.dumps(payload,ensure_ascii=False,default=str) if payload is not None else None))
@@ -134,7 +158,7 @@ def setup_account(data:FirstAccount):
   audit(c,cur.lastrowid,'initial_setup','user',cur.lastrowid)
  return {'ok':True,'message':'İlk ortak hesabı oluşturuldu. Giriş yapabilirsiniz.'}
 
-class Login(BaseModel): username:str;password:str
+class Login(BaseModel): username:str=Field(min_length=1,max_length=128);password:str=Field(min_length=1,max_length=256)
 class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
 class DeviceRegister(BaseModel):label:str=Field(min_length=1,max_length=80);password:str
 class DeviceRevoke(BaseModel):password:str
@@ -152,14 +176,39 @@ class Transfer(BaseModel):from_user_id:int;to_user_id:int;policy_ids:list[int]|N
 class Theme(BaseModel):theme:str
 class BrandingUpdate(BaseModel):app_name:str=Field(min_length=1,max_length=48);color:str
 
+IDLE_SECONDS=900
+
+def trusted_origin(request:Request):
+ origin=request.headers.get('origin','')
+ expected=os.getenv('POLICEM_PUBLIC_ORIGIN','').rstrip('/')
+ if expected and hmac.compare_digest(origin,expected):return True
+ return os.getenv('POLICEM_DEV_MODE')=='1' and origin in ('http://localhost:8000','http://127.0.0.1:8000')
+
 def current(request:Request):
  auth=request.headers.get('Authorization','')
  if not auth.startswith('Bearer '): raise HTTPException(401,'Oturum açın')
  token=hashlib.sha256(auth[7:].encode()).hexdigest()
+ now=int(time.time())
  with tx() as c:
-  u=c.execute('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN device_sessions ds ON ds.token_hash=s.token_hash LEFT JOIN trusted_devices d ON d.id=ds.device_id WHERE s.token_hash=? AND s.expires>? AND u.active=1 AND (ds.token_hash IS NULL OR (d.id IS NOT NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id))',(token,int(time.time()))).fetchone()
- if not u:raise HTTPException(401,'Oturum geçersiz')
- return dict(u)
+  row=c.execute('''SELECT s.last_activity,s.expires,s.user_id,u.* FROM sessions s
+   JOIN users u ON u.id=s.user_id LEFT JOIN device_sessions ds ON ds.token_hash=s.token_hash
+   LEFT JOIN trusted_devices d ON d.id=ds.device_id WHERE s.token_hash=? AND s.expires>?
+   AND u.active=1 AND (ds.token_hash IS NULL OR
+   (d.id IS NOT NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id))''',(token,now)).fetchone()
+  if not row:raise HTTPException(401,'Oturum geçersiz')
+  last_activity=int(row['last_activity'] or 0)
+  if last_activity and now-last_activity>=IDLE_SECONDS:
+   raise HTTPException(401,detail={'code':'SESSION_IDLE'})
+  if not last_activity:
+   last_activity=now
+   c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=?',(now,token))
+  elif request.headers.get('X-User-Interaction')=='1':
+   changed=c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=? AND expires>? AND last_activity>?',
+    (now,token,now,now-IDLE_SECONDS)).rowcount
+   if not changed:raise HTTPException(401,detail={'code':'SESSION_IDLE'})
+   last_activity=now
+  user=dict(row);user['auth_last_activity']=last_activity
+ return user
 
 def require(*roles):
  def f(u=Depends(current)):
@@ -168,20 +217,51 @@ def require(*roles):
  return f
 
 @app.post('/api/login')
-def login(data:Login):
+def login(data:Login,request:Request):
+ now=int(time.time())
+ username_key=hashlib.sha256(('login-user:'+data.username.strip().casefold()).encode()).hexdigest()
+ ip=(request.client.host if request.client else 'unknown')
+ ip_key=hashlib.sha256(('login-ip:'+ip).encode()).hexdigest()
  with tx() as c:
+  blocked=False
+  for key,limit in ((username_key,5),(ip_key,30)):
+   bucket=c.execute('SELECT attempts,window_started FROM auth_attempts WHERE scope_hash=?',(key,)).fetchone()
+   if bucket and now-int(bucket['window_started'])<900 and int(bucket['attempts'])>=limit:blocked=True
+  if blocked:
+   c.commit()
+   raise HTTPException(429,detail={'code':'RATE_LIMITED'})
   u=c.execute('SELECT * FROM users WHERE username=? AND active=1',(data.username,)).fetchone()
-  if not u or not check_pw(data.password,u['password_hash']):raise HTTPException(401,'Kullanıcı adı veya şifre hatalı')
+  password_ok=check_pw(data.password,u['password_hash'] if u else DUMMY_PASSWORD_HASH)
+  if not u or not password_ok:
+   for key in (username_key,ip_key):
+    c.execute('''INSERT INTO auth_attempts(scope_hash,attempts,window_started,updated_at)
+     VALUES (?,1,?,?) ON CONFLICT(scope_hash) DO UPDATE SET
+     attempts=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN 1 ELSE auth_attempts.attempts+1 END,
+     window_started=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN excluded.updated_at ELSE auth_attempts.window_started END,
+     updated_at=excluded.updated_at''',(key,now,now))
+   c.commit()
+   raise HTTPException(401,'Kullanıcı adı veya şifre hatalı')
+  c.execute('DELETE FROM auth_attempts WHERE scope_hash=?',(username_key,))
   token=secrets.token_urlsafe(40)
-  c.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400))
- return {'token':token,'user':public_user(dict(u))}
+  c.execute('INSERT INTO sessions(token_hash,user_id,expires,last_activity) VALUES (?,?,?,?)',
+   (hashlib.sha256(token.encode()).hexdigest(),u['id'],now+86400,now))
+ return {'token':token,'user':public_user(dict(u)),'idle_expires_at':now+IDLE_SECONDS}
 
 def public_user(u):return {k:u.get(k) for k in ['id','username','display_name','role','branch_id','theme','email','active','phone','start_date','job_title']}
 @app.get('/api/me')
-def me(u=Depends(current)):return public_user(u)
+def me(u=Depends(current)):return public_user(u)|{'idle_expires_at':u['auth_last_activity']+IDLE_SECONDS}
 @app.post('/api/logout')
-def logout(request:Request,u=Depends(current)):
- with tx() as c:c.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest(),))
+def logout(request:Request,response:Response,u=Depends(current)):
+ token_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest()
+ with tx() as c:
+  device=c.execute('SELECT device_id FROM device_sessions WHERE token_hash=?',(token_hash,)).fetchone()
+  if device:
+   c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device['device_id'],))
+   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device['device_id'],))
+   c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device['device_id'],))
+  else:c.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash,))
+  audit(c,u['id'],'logout','session',u['id'])
+ response.delete_cookie('policem_refresh',path='/api/security/refresh',secure=True,samesite='strict',httponly=True)
  return {'ok':True}
 @app.post('/api/password')
 def change_password(data:PasswordChange,u=Depends(current)):
@@ -190,6 +270,9 @@ def change_password(data:PasswordChange,u=Depends(current)):
   c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.new),u['id']))
   c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(u['id'],))
+  c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(u['id'],))
+  c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
+  audit(c,u['id'],'password_change','user',u['id'])
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
 # Device inventory is NOT an authentication factor yet. No device bearer credentials are issued.
 @app.get('/api/security/devices')
@@ -214,30 +297,15 @@ def register_trusted_device(data:DeviceRegister,u=Depends(current)):
 
 @app.post('/api/security/pin/enroll')
 def enroll_pin(data:PinEnroll,u=Depends(current)):
- if not re.fullmatch(r'[0-9]{4}',data.pin):raise HTTPException(400,'PIN dört rakam olmalı')
- if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
- with tx() as c:
-  device=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(data.device_id,u['id'])).fetchone()
-  if not device:raise HTTPException(404,'Cihaz bulunamadı')
-  c.execute('INSERT INTO device_pin(device_id,pin_hash,failures,locked_at) VALUES (?,?,0,NULL) ON CONFLICT(device_id) DO UPDATE SET pin_hash=excluded.pin_hash,failures=0,locked_at=NULL',(data.device_id,password_hash(data.pin)))
-  audit(c,u['id'],'pin_enroll','trusted_device',0,{'device_id':data.device_id})
- return {'ok':True}
+ raise HTTPException(503,detail={'code':'METHOD_UNAVAILABLE'})
 
 @app.post('/api/security/refresh/enroll')
 def enroll_refresh(data:RefreshEnroll,request:Request,response:Response,u=Depends(current)):
- if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
- with tx() as c:
-  d=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(data.device_id,u['id'])).fetchone()
-  if not d:raise HTTPException(404,'Cihaz bulunamadı')
-  raw=secrets.token_urlsafe(48)
-  now=int(time.time())
-  c.execute('INSERT INTO refresh_sessions(token_hash,user_id,device_id,expires,created_at) VALUES (?,?,?,?,?)',(hashlib.sha256(raw.encode()).hexdigest(),u['id'],data.device_id,now+30*86400,now))
-  audit(c,u['id'],'refresh_enroll','trusted_device',0,{'device_id':data.device_id})
- response.set_cookie('policem_refresh',raw,httponly=True,secure=True,samesite='strict',max_age=30*86400,path='/api/security/refresh')
- return {'ok':True}
+ raise HTTPException(503,detail={'code':'METHOD_UNAVAILABLE'})
 
 @app.post('/api/security/refresh/logout')
 def logout_refresh(request:Request,response:Response):
+ if not trusted_origin(request):raise HTTPException(403,detail={'code':'ORIGIN_DENIED'})
  raw=request.cookies.get('policem_refresh','')
  if raw:
   with tx() as c:c.execute('DELETE FROM refresh_sessions WHERE token_hash=?',(hashlib.sha256(raw.encode()).hexdigest(),))
@@ -246,35 +314,7 @@ def logout_refresh(request:Request,response:Response):
 
 @app.post('/api/security/refresh')
 def refresh_session(data:PinRefresh,request:Request,response:Response):
- origin=request.headers.get('origin')
- host=request.headers.get('host','')
- if not origin or origin not in ('https://'+host,'http://localhost:8000','http://127.0.0.1:8000'):
-  raise HTTPException(403,'Kaynak doğrulanamadı')
- raw=request.cookies.get('policem_refresh','')
- if not raw:raise HTTPException(401,'Yenileme oturumu bulunamadı')
- now=int(time.time())
- with tx() as c:
-  record=c.execute('SELECT r.*,u.active,d.revoked_at FROM refresh_sessions r JOIN users u ON u.id=r.user_id JOIN trusted_devices d ON d.id=r.device_id WHERE r.token_hash=?',(hashlib.sha256(raw.encode()).hexdigest(),)).fetchone()
-  if not record or record['expires']<=now or record['active']!=1 or record['revoked_at'] is not None:
-   raise HTTPException(401,'Yenileme oturumu geçersiz')
-  pinrow=c.execute('SELECT pin_hash,failures,locked_at FROM device_pin WHERE device_id=?',(record['device_id'],)).fetchone()
-  if not pinrow or pinrow['locked_at'] is not None:raise HTTPException(403,'PIN kilitli; şifreyle giriş yapın')
-  if not check_pw(data.pin,pinrow['pin_hash']):
-   failures=pinrow['failures']+1
-   c.execute('UPDATE device_pin SET failures=?,locked_at=? WHERE device_id=?',(failures,now if failures>=5 else None,record['device_id']))
-   # tx() rolls back on exceptions; commit failed-attempt counters explicitly before returning.
-   c.commit()
-   raise HTTPException(403,'PIN hatalı')
-  c.execute('UPDATE device_pin SET failures=0 WHERE device_id=?',(record['device_id'],))
-  c.execute('DELETE FROM refresh_sessions WHERE token_hash=?',(record['token_hash'],))
-  new_refresh=secrets.token_urlsafe(48)
-  c.execute('INSERT INTO refresh_sessions(token_hash,user_id,device_id,expires,created_at) VALUES (?,?,?,?,?)',(hashlib.sha256(new_refresh.encode()).hexdigest(),record['user_id'],record['device_id'],now+30*86400,now))
-  token=secrets.token_urlsafe(40)
-  token_hash=hashlib.sha256(token.encode()).hexdigest()
-  c.execute('INSERT INTO sessions VALUES (?,?,?)',(token_hash,record['user_id'],now+86400))
-  c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,record['device_id']))
- response.set_cookie('policem_refresh',new_refresh,httponly=True,secure=True,samesite='strict',max_age=30*86400,path='/api/security/refresh')
- return {'token':token}
+ raise HTTPException(503,detail={'code':'METHOD_UNAVAILABLE'})
 
 @app.post('/api/security/devices/{device_id}/bind')
 def bind_device_session(device_id:str,data:DeviceRevoke,request:Request,u=Depends(current)):
@@ -420,7 +460,11 @@ def edit_user(user_id:int,data:UserEdit,u=Depends(require('partner','manager')))
    count=c.execute('SELECT COUNT(*) FROM policies WHERE owner_user_id=?',(user_id,)).fetchone()[0]
    if count:raise HTTPException(409,f'Önce {count} poliçeyi başka personele devredin')
   c.execute('UPDATE users SET display_name=?,phone=?,start_date=?,job_title=?,role=?,active=? WHERE id=?',(data.display_name.strip(),data.phone.strip(),str(data.start_date),data.job_title,JOB_ROLES[data.job_title],int(data.active),user_id))
-  if not data.active:c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+  if not data.active:
+   c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(user_id,))
+   c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(user_id,))
+   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
   audit(c,u['id'],'update','user',user_id,{'from_title':old['job_title'],'to_title':data.job_title,'active':data.active})
  return {'ok':True}
 
@@ -451,6 +495,9 @@ def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
    if old['role']=='partner' and old['active'] and c.execute("SELECT COUNT(*) FROM users WHERE role='partner' AND active=1").fetchone()[0]<=1:raise HTTPException(409,'Son aktif acente yetkilisi kapatılamaz')
    if c.execute('SELECT COUNT(*) FROM policies WHERE owner_user_id=?',(item_id,)).fetchone()[0]:raise HTTPException(409,'Önce poliçeleri başka personele devredin')
    c.execute('DELETE FROM sessions WHERE user_id=?',(item_id,))
+   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(item_id,))
+   c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(item_id,))
+   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
   c.execute(f'UPDATE {kind} SET active=0 WHERE id=?',(item_id,));audit(c,u['id'],'deactivate',kind,item_id)
  return {'ok':True}
 

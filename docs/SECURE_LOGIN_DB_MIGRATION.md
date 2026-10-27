@@ -1,6 +1,6 @@
 # Secure login database migration plan
 
-Status: **P1 additive SQLite migration plan; later phases append their exact DDL before use.**
+Status: **P1 additive SQLite migration implemented; later phases append exact DDL before use.**
 Baseline schema: `app.init()` at `d577d2a03a81a4f4cb79d4b39cde223ba79533e3`.
 Database path remains `POLICEM_DATA/policem.sqlite3`; no live/Render database is used.
 
@@ -29,11 +29,15 @@ CREATE INDEX IF NOT EXISTS idx_auth_attempts_updated
 
 `ALTER TABLE` is guarded by `PRAGMA table_info(sessions)` so a second startup does not repeat it. Existing, unexpired session rows with `last_activity=0` are initialized once to the migration server time; their existing absolute `expires` value is unchanged. New password or validated quick-login sessions set both `expires` and `last_activity` explicitly. Expired session rows are not extended. Attempt keys are SHA-256 hashes of normalized scope labels (username or client IP); raw IP/username is not stored in the rate-limit table. Failed attempts commit before the generic response. Rows older than one day can be pruned transactionally.
 
-`auth_schema_meta` has a single-row version marker. Upgrade is additive and idempotent. If any required statement or verification fails, startup must fail closed; do not serve requests with a partially applied schema. Run migration once against (1) an empty test DB and (2) a fixture built from the baseline schema, then run startup a second time and verify columns, row counts, foreign keys, and existing password/policy rows.
+On the first security schema initialization only (`auth_schema_meta` did not exist before migration), invalidate prototype quick-login material: mark active `trusted_devices` revoked, delete sessions bound through `device_sessions`, delete refresh grants, and delete four-digit PIN hashes. Keep unbound password sessions and all account/business records. Write a secret-free migration audit row when any active device was revoked. Password login remains available; old cookie+PIN state cannot become usable if later code enables secure quick login.
+
+`auth_schema_meta` has a single-row version marker. Upgrade is additive and idempotent. The P1 code checks `PRAGMA table_info(sessions)` and uses a first-initialization marker before revoking legacy quick-login grants. If any required statement or verification fails, startup must fail closed; do not serve requests with a partially applied schema. The test suite runs migration against empty and legacy fixtures, then starts a second time and verifies columns, counts, and preserved password data.
 
 ## Existing data preserved
 
-No change to `users.password_hash`, `users.role`, `users.branch_id`, policy/renewal/customer records, audit history, push subscriptions, or existing session `expires`. The `sessions` primary key and user foreign key remain unchanged. Current `trusted_devices`, `device_sessions`, `refresh_sessions`, and `device_pin` are retained while later phases add credential and activation state. No data deletion or live DB operation is permitted.
+No change to `users.password_hash`, `users.role`, `users.branch_id`, policy/renewal/customer records, or push subscriptions. Existing session `expires`, primary key, and user foreign key remain unchanged. Prototype device rows remain for audit but become revoked; associated prototype PIN hashes and refresh grants are invalidated because their proof model is insufficient. New secure device credentials are added in later phases. No live DB operation is permitted.
+
+P1 verification: `tests/test_auth_session.py::test_legacy_schema_migrates_additively_and_second_startup_is_safe` passed, including unchanged legacy password hash and active session row preservation. All current device/session tests passed.
 
 ## Rollback
 

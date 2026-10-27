@@ -49,3 +49,16 @@ No tests were skipped. The seven failures predate feature changes and will be di
 ## Stage result rule
 
 For each later stage, record the exact command and exit code, pass/fail/skip counts, known baseline failures, changed files, and commit SHA. Use **PASSED**, **FAILED**, or **NOT RUN** for every check. A test that cannot run is never counted as passed. Baseline failures do not stop independent work under the final specification, but critical security properties must have affirmative evidence before their feature is enabled.
+
+## P1 — sessions, idle lock, logout, and device revocation
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_auth_session.py tests/test_device_sessions.py tests/test_quick_login.py tests/test_staff_permissions.py` | 0 | **19 passed, 0 failed, 0 skipped, 15 warnings**, 11.82s. |
+| `.venv\\Scripts\\python.exe -m pytest -q` | 1 | **40 passed, 6 failed, 0 skipped, 33 warnings**, 16.39s. Six failures remain from baseline: five `test_app.py` stale staff/branding expectations and `test_notification_core.py` 30-day milestone expectation. |
+| `.venv\\Scripts\\python.exe -m compileall -q app.py tests` | 0 | Passed. |
+| `node --check static/push-client.js` | 0 | Passed. |
+| Extract inline script from `static/index.html`, then `node --check <temp file>` | 0 | Passed. |
+| `git diff --check` | 0 | Passed. |
+
+P1's legacy PIN prototype tests were updated to assert `METHOD_UNAVAILABLE` until a cryptographic device proof exists. The new focused tests cover the 900-second server boundary, background reads not sliding idle, actual interaction sliding, durable username throttling, generic account failures, configured-origin enforcement independent of Host, logout invalidation, additive/idempotent migration, and legacy hash preservation. P1 is complete; quick login remains disabled by design until P2/P3 provide and verify real proof.
