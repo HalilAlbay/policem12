@@ -135,6 +135,6 @@ def test_legacy_schema_migrates_additively_and_second_startup_is_safe(auth_clien
             app.init()
             with app.tx() as db:
                 assert db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 1
-                assert db.execute('SELECT version FROM auth_schema_meta WHERE id=1').fetchone()[0] == 1
+                assert db.execute('SELECT version FROM auth_schema_meta WHERE id=1').fetchone()[0] == 2
         finally:
             app.DB = old_db

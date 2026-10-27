@@ -50,6 +50,17 @@ No tests were skipped. The seven failures predate feature changes and will be di
 
 For each later stage, record the exact command and exit code, pass/fail/skip counts, known baseline failures, changed files, and commit SHA. Use **PASSED**, **FAILED**, or **NOT RUN** for every check. A test that cannot run is never counted as passed. Baseline failures do not stop independent work under the final specification, but critical security properties must have affirmative evidence before their feature is enabled.
 
+## P2 — WebAuthn registration and discoverable login
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m py_compile app.py` | 0 | **PASSED** |
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_webauthn.py tests/test_auth_session.py tests/test_device_sessions.py tests/test_quick_login.py` | 0 | **18 passed, 0 failed, 0 skipped** |
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_webauthn.py::test_generated_platform_credential_registers_and_authenticates -x` | 0 | **PASSED**; generated EC2/ES256 credential registers and signs a discoverable assertion checked by the real server verifier |
+| `git diff --check` | 0 | **PASSED** |
+
+Test warnings: FastAPI `on_event` and Starlette TestClient/httpx deprecations; no P2 test failure. Physical iPhone/iOS Safari acceptance and production origin/RP configuration are **NOT RUN** (require the user’s real iPhone and target origin). The feature rejects missing/mismatched server configuration with 503.
+
 ## P1 — sessions, idle lock, logout, and device revocation
 
 | Command | Exit | Result |

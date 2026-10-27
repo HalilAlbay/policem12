@@ -39,6 +39,14 @@ No change to `users.password_hash`, `users.role`, `users.branch_id`, policy/rene
 
 P1 verification: `tests/test_auth_session.py::test_legacy_schema_migrates_additively_and_second_startup_is_safe` passed, including unchanged legacy password hash and active session row preservation. All current device/session tests passed.
 
+## P2 WebAuthn schema changes
+
+The idempotent P2 migration adds a stable random opaque `users.webauthn_user_handle` (unique where non-NULL), `webauthn_credentials`, and `webauthn_challenges`; it advances `auth_schema_meta.version` to 2. Existing users and business rows are retained. User handles contain no username/PII and are used for discoverable credentials. Credential rows contain only credential IDs, public keys, counters, backup/device metadata, and timestamps; authenticator private keys and biometric data never reach the server.
+
+`webauthn_credentials.credential_id` is the primary key. Each row belongs to exactly one user and a trusted device. Revocation timestamps are authoritative; device revoke, account deactivation, and password change revoke the matching credential rows. Challenges have random opaque IDs, 32-byte challenges, a `register`/`login` purpose, 5-minute expiry, optional owner and access-session hash, optional device label, and a consumed timestamp. Verification consumes a matching unexpired challenge through a conditional update before parsing or cryptographic verification, so malformed attempts, races, and replays cannot retry a ceremony.
+
+P2 migration verification: generated EC2/ES256 registration and discoverable-login ceremonies exercise the verifier end to end. A v2 metadata value is expected after migration. No live or Render database was touched.
+
 ## Rollback
 
 Application rollback is to the pre-migration source SHA; SQLite safely ignores the added column and tables, so no destructive reverse migration is needed. Do not drop migration tables/columns because a previous binary may have already written rows. When rolling back to code that predates idle enforcement, old binaries ignore `sessions.last_activity` and `auth_attempts`. Preserve a database backup according to the deployment's existing persistence procedure before any eventual production migration; no deployment is in scope here.

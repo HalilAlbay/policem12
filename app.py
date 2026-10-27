@@ -9,6 +9,12 @@ from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import fitz
+from urllib.parse import urlsplit
+from webauthn import (generate_registration_options, verify_registration_response,
+ generate_authentication_options, verify_authentication_response, options_to_json, base64url_to_bytes)
+from webauthn.helpers import bytes_to_base64url
+from webauthn.helpers.structs import (AuthenticatorSelectionCriteria, AuthenticatorAttachment,
+ ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor)
 
 ROOT=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 STORAGE_ROOT=Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else ROOT
@@ -58,6 +64,26 @@ def init():
   c.execute('''CREATE TABLE IF NOT EXISTS auth_schema_meta(
     id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL)''')
   c.execute('INSERT OR IGNORE INTO auth_schema_meta(id,version) VALUES (1,1)')
+  user_cols={x['name'] for x in c.execute('PRAGMA table_info(users)')}
+  if 'webauthn_user_handle' not in user_cols:
+   c.execute('ALTER TABLE users ADD COLUMN webauthn_user_handle TEXT')
+  for urow in c.execute('SELECT id FROM users WHERE webauthn_user_handle IS NULL').fetchall():
+   c.execute('UPDATE users SET webauthn_user_handle=? WHERE id=?',(secrets.token_urlsafe(32),urow['id']))
+  c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_webauthn_handle ON users(webauthn_user_handle) WHERE webauthn_user_handle IS NOT NULL')
+  c.execute('''CREATE TABLE IF NOT EXISTS webauthn_credentials(
+   credential_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),
+   device_id TEXT NOT NULL REFERENCES trusted_devices(id),public_key BLOB NOT NULL,
+   sign_count INTEGER NOT NULL DEFAULT 0,device_type TEXT NOT NULL DEFAULT 'single_device',
+   backed_up INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,last_used_at INTEGER,
+   revoked_at INTEGER)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id,revoked_at)')
+  c.execute('''CREATE TABLE IF NOT EXISTS webauthn_challenges(
+   id TEXT PRIMARY KEY,purpose TEXT NOT NULL CHECK(purpose IN ('register','login')),
+   user_id INTEGER REFERENCES users(id),session_hash TEXT,challenge BLOB NOT NULL,
+   label TEXT,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,consumed_at INTEGER)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_webauthn_challenge_expiry ON webauthn_challenges(expires_at,consumed_at)')
+  c.execute('UPDATE auth_schema_meta SET version=2 WHERE id=1 AND version<2')
+  c.execute('DELETE FROM webauthn_challenges WHERE expires_at<? OR consumed_at IS NOT NULL',(int(time.time())-86400,))
   c.execute('''CREATE TABLE IF NOT EXISTS auth_attempts(
     scope_hash TEXT PRIMARY KEY,attempts INTEGER NOT NULL CHECK(attempts>=0),
     window_started INTEGER NOT NULL,updated_at INTEGER NOT NULL)''')
@@ -162,6 +188,158 @@ class Login(BaseModel): username:str=Field(min_length=1,max_length=128);password
 class PasswordChange(BaseModel):old:str;new:str=Field(min_length=12)
 class DeviceRegister(BaseModel):label:str=Field(min_length=1,max_length=80);password:str
 class DeviceRevoke(BaseModel):password:str
+class WebAuthnRegisterOptions(BaseModel):label:str=Field(min_length=1,max_length=80);password:str=Field(min_length=1,max_length=256)
+class WebAuthnRegisterVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);credential:dict
+class WebAuthnLoginVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);credential:dict
+def current(request:Request):
+ auth=request.headers.get('Authorization','')
+ if not auth.startswith('Bearer '): raise HTTPException(401,'Oturum açın')
+ token=hashlib.sha256(auth[7:].encode()).hexdigest();now=int(time.time())
+ with tx() as c:
+  row=c.execute('''SELECT s.last_activity,s.expires,s.user_id,u.* FROM sessions s
+   JOIN users u ON u.id=s.user_id LEFT JOIN device_sessions ds ON ds.token_hash=s.token_hash
+   LEFT JOIN trusted_devices d ON d.id=ds.device_id WHERE s.token_hash=? AND s.expires>?
+   AND u.active=1 AND (ds.token_hash IS NULL OR (d.id IS NOT NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id))''',(token,now)).fetchone()
+  if not row:raise HTTPException(401,'Oturum geçersiz')
+  last_activity=int(row['last_activity'] or 0)
+  if last_activity and now-last_activity>=IDLE_SECONDS:raise HTTPException(401,detail={'code':'SESSION_IDLE'})
+  if not last_activity:
+   last_activity=now;c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=?',(now,token))
+  elif request.headers.get('X-User-Interaction')=='1':
+   changed=c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=? AND expires>? AND last_activity>?',(now,token,now,now-IDLE_SECONDS)).rowcount
+   if not changed:raise HTTPException(401,detail={'code':'SESSION_IDLE'})
+   last_activity=now
+  user=dict(row);user['auth_last_activity']=last_activity
+ return user
+
+def webauthn_config():
+ origin=os.getenv('POLICEM_PUBLIC_ORIGIN','')
+ rp_id=os.getenv('WEBAUTHN_RP_ID','').lower().rstrip('.')
+ try:
+  parsed=urlsplit(origin);host=(parsed.hostname or '').lower().rstrip('.')
+  if parsed.scheme=='https' and parsed.netloc and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and parsed.path in ('','/'):
+   canonical=f'https://{parsed.netloc}'
+   origin_ok=(canonical==origin)
+  elif os.getenv('POLICEM_DEV_MODE')=='1' and parsed.scheme=='http' and host in ('localhost','127.0.0.1') and parsed.port==8000 and parsed.path in ('','/') and not parsed.query and not parsed.fragment:
+   canonical=f'http://{parsed.netloc}';origin_ok=(canonical==origin)
+  else:origin_ok=False
+ except ValueError:origin_ok=False;host=''
+ if not origin_ok or not rp_id or not host or not (host==rp_id or host.endswith('.'+rp_id)):
+  raise HTTPException(503,detail={'code':'METHOD_UNAVAILABLE'})
+ return canonical, rp_id
+
+def checked_credential(value):
+ try:
+  if len(json.dumps(value,separators=(',',':'))) > 65536:raise ValueError()
+  if value.get('type')!='public-key' or not isinstance(value.get('response'),dict):raise ValueError()
+  raw=base64url_to_bytes(value.get('rawId',''))
+  if not raw or len(raw)>1024 or base64url_to_bytes(value.get('id',''))!=raw:raise ValueError()
+  return raw
+ except Exception:raise HTTPException(400,detail={'code':'INVALID_CEREMONY'})
+
+def consume_webauthn_challenge(ceremony_id,purpose,user_id=None,session_hash=None):
+ now=int(time.time())
+ with tx() as c:
+  row=c.execute('''SELECT * FROM webauthn_challenges WHERE id=? AND purpose=? AND expires_at>? AND consumed_at IS NULL
+    AND ((user_id IS NULL AND ? IS NULL) OR user_id=?) AND ((session_hash IS NULL AND ? IS NULL) OR session_hash=?)''',
+    (ceremony_id,purpose,now,user_id,user_id,session_hash,session_hash)).fetchone()
+  if not row:raise HTTPException(401 if purpose=='login' else 400,detail={'code':'INVALID_CEREMONY'})
+  changed=c.execute('UPDATE webauthn_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL AND expires_at>?',(now,ceremony_id,now)).rowcount
+  if changed!=1:raise HTTPException(401,detail={'code':'INVALID_CEREMONY'})
+  return dict(row)
+
+def check_webauthn_rate(request:Request):
+ now=int(time.time());ip=request.client.host if request.client else 'unknown'
+ key=hashlib.sha256(('webauthn-ip:'+ip).encode()).hexdigest()
+ with tx() as c:
+  row=c.execute('SELECT attempts,window_started FROM auth_attempts WHERE scope_hash=?',(key,)).fetchone()
+  if row and now-int(row['window_started'])<900 and int(row['attempts'])>=30:
+   raise HTTPException(429,detail={'code':'RATE_LIMITED'})
+  c.execute('''INSERT INTO auth_attempts(scope_hash,attempts,window_started,updated_at) VALUES (?,1,?,?)
+   ON CONFLICT(scope_hash) DO UPDATE SET attempts=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN 1 ELSE auth_attempts.attempts+1 END,
+   window_started=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN excluded.updated_at ELSE auth_attempts.window_started END,
+   updated_at=excluded.updated_at''',(key,now,now))
+
+def json_credential_json(data):
+ try:return json.loads(json.dumps(data,ensure_ascii=False))
+ except Exception:raise HTTPException(400,detail={'code':'INVALID_CEREMONY'})
+
+@app.post('/api/security/webauthn/register/options')
+def webauthn_register_options(data:WebAuthnRegisterOptions,request:Request,u=Depends(current)):
+ origin,rp_id=webauthn_config()
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,detail={'code':'STEP_UP_REQUIRED'})
+ label=data.label.strip()
+ if not label:raise HTTPException(422,'Cihaz adı gerekli')
+ now=int(time.time());session_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest()
+ ceremony_id=secrets.token_urlsafe(24);challenge=secrets.token_bytes(32)
+ with tx() as c:
+  count=c.execute('SELECT COUNT(*) FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL',(u['id'],)).fetchone()[0]
+  if count>=10:raise HTTPException(409,detail={'code':'DEVICE_LIMIT'})
+  row=c.execute('SELECT webauthn_user_handle FROM users WHERE id=? AND active=1',(u['id'],)).fetchone()
+  if not row:raise HTTPException(401,detail={'code':'AUTH_REQUIRED'})
+  excludes=[PublicKeyCredentialDescriptor(id=base64url_to_bytes(x['credential_id'])) for x in c.execute('SELECT credential_id FROM webauthn_credentials WHERE user_id=? AND revoked_at IS NULL',(u['id'],))]
+  options=generate_registration_options(rp_id=rp_id,rp_name='Poliçem',user_name=u['username'],user_display_name=u['display_name'],user_id=row['webauthn_user_handle'].encode(),challenge=challenge,timeout=300000,authenticator_selection=AuthenticatorSelectionCriteria(authenticator_attachment=AuthenticatorAttachment.PLATFORM,resident_key=ResidentKeyRequirement.REQUIRED,require_resident_key=True,user_verification=UserVerificationRequirement.REQUIRED),exclude_credentials=excludes)
+  c.execute('INSERT INTO webauthn_challenges(id,purpose,user_id,session_hash,challenge,label,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)',(ceremony_id,'register',u['id'],session_hash,challenge,label,now,now+300))
+ return {'ceremony_id':ceremony_id,'publicKey':json.loads(options_to_json(options))}
+
+@app.post('/api/security/webauthn/register/verify')
+def webauthn_register_verify(data:WebAuthnRegisterVerify,request:Request,u=Depends(current)):
+ origin,rp_id=webauthn_config()
+ session_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest()
+ challenge=consume_webauthn_challenge(data.ceremony_id,'register',u['id'],session_hash)
+ raw_id=checked_credential(data.credential)
+ try:
+  verified=verify_registration_response(credential=json_credential_json(data.credential),expected_challenge=bytes(challenge['challenge']),expected_rp_id=rp_id,expected_origin=origin,require_user_verification=True)
+  if not hmac.compare_digest(verified.credential_id,raw_id) or not verified.user_verified:raise ValueError('credential mismatch')
+ except Exception:raise HTTPException(400,detail={'code':'INVALID_CEREMONY'})
+ now=int(time.time());device_id=secrets.token_urlsafe(24);credential_id=bytes_to_base64url(verified.credential_id)
+ with tx() as c:
+  count=c.execute('SELECT COUNT(*) FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL',(u['id'],)).fetchone()[0]
+  if count>=10:raise HTTPException(409,detail={'code':'DEVICE_LIMIT'})
+  try:
+   c.execute('INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen) VALUES (?,?,?,?,?)',(device_id,u['id'],challenge['label'],now,now))
+   c.execute('INSERT INTO webauthn_credentials(credential_id,user_id,device_id,public_key,sign_count,device_type,backed_up,created_at) VALUES (?,?,?,?,?,?,?,?)',(credential_id,u['id'],device_id,verified.credential_public_key,verified.sign_count,verified.credential_device_type.value,int(verified.credential_backed_up),now))
+  except sqlite3.IntegrityError:raise HTTPException(409,detail={'code':'CREDENTIAL_EXISTS'})
+  audit(c,u['id'],'webauthn_register','trusted_device',None,{'device_id':device_id})
+ return {'ok':True,'device':{'id':device_id,'label':challenge['label'],'method':'webauthn'}}
+
+@app.post('/api/security/webauthn/login/options')
+def webauthn_login_options(request:Request):
+ origin,rp_id=webauthn_config();now=int(time.time());ceremony_id=secrets.token_urlsafe(24);challenge=secrets.token_bytes(32)
+ check_webauthn_rate(request)
+ with tx() as c:
+  options=generate_authentication_options(rp_id=rp_id,challenge=challenge,timeout=300000,allow_credentials=[],user_verification=UserVerificationRequirement.REQUIRED)
+  c.execute("INSERT INTO webauthn_challenges(id,purpose,challenge,created_at,expires_at) VALUES (?,'login',?,?,?)",(ceremony_id,challenge,now,now+300))
+ return {'ceremony_id':ceremony_id,'publicKey':json.loads(options_to_json(options))}
+
+@app.post('/api/security/webauthn/login/verify')
+def webauthn_login_verify(data:WebAuthnLoginVerify,request:Request):
+ origin,rp_id=webauthn_config()
+ challenge=consume_webauthn_challenge(data.ceremony_id,'login')
+ raw_id=checked_credential(data.credential)
+ credential_id=bytes_to_base64url(raw_id)
+ with tx() as c:
+  row=c.execute('''SELECT wc.*,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.phone,u.start_date,u.job_title,u.webauthn_user_handle,d.label
+    FROM webauthn_credentials wc JOIN users u ON u.id=wc.user_id JOIN trusted_devices d ON d.id=wc.device_id
+    WHERE wc.credential_id=? AND wc.revoked_at IS NULL AND d.revoked_at IS NULL AND d.user_id=wc.user_id''',(credential_id,)).fetchone()
+ if not row or not row['active']:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+ try:
+  response=data.credential['response'];handle=response.get('userHandle')
+  if not handle or not hmac.compare_digest(base64url_to_bytes(handle),row['webauthn_user_handle'].encode()):raise ValueError('user handle mismatch')
+  verified=verify_authentication_response(credential=json_credential_json(data.credential),expected_challenge=bytes(challenge['challenge']),expected_rp_id=rp_id,expected_origin=origin,credential_public_key=bytes(row['public_key']),credential_current_sign_count=int(row['sign_count']),require_user_verification=True)
+  if not verified.user_verified or not hmac.compare_digest(verified.credential_id,raw_id):raise ValueError('credential mismatch')
+ except Exception:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+ now=int(time.time());token=secrets.token_urlsafe(40);token_hash=hashlib.sha256(token.encode()).hexdigest()
+ with tx() as c:
+  changed=c.execute('UPDATE webauthn_credentials SET sign_count=?,device_type=?,backed_up=?,last_used_at=? WHERE credential_id=? AND revoked_at IS NULL AND sign_count=?',(verified.new_sign_count,verified.credential_device_type.value,int(verified.credential_backed_up),now,credential_id,row['sign_count'])).rowcount
+  active=c.execute('SELECT 1 FROM users u JOIN trusted_devices d ON d.user_id=u.id WHERE u.id=? AND u.active=1 AND d.id=? AND d.revoked_at IS NULL',(row['user_id'],row['device_id'])).fetchone()
+  if changed!=1 or not active:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+  c.execute('INSERT INTO sessions(token_hash,user_id,expires,last_activity) VALUES (?,?,?,?)',(token_hash,row['user_id'],now+86400,now))
+  c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,row['device_id']))
+  c.execute('UPDATE trusted_devices SET last_seen=? WHERE id=?',(now,row['device_id']))
+  audit(c,row['user_id'],'webauthn_login','trusted_device',None,{'device_id':row['device_id']})
+ user={'id':row['user_id'],'username':row['username'],'display_name':row['display_name'],'role':row['role'],'branch_id':row['branch_id'],'theme':row['theme'],'email':row['email'],'phone':row['phone'],'start_date':row['start_date'],'job_title':row['job_title'],'active':row['active']}
+ return {'token':token,'user':user,'idle_expires_at':now+IDLE_SECONDS}
 class RefreshEnroll(BaseModel):device_id:str;password:str
 class PinEnroll(BaseModel):device_id:str;password:str;pin:str
 class PinRefresh(BaseModel):pin:str
@@ -183,32 +361,6 @@ def trusted_origin(request:Request):
  expected=os.getenv('POLICEM_PUBLIC_ORIGIN','').rstrip('/')
  if expected and hmac.compare_digest(origin,expected):return True
  return os.getenv('POLICEM_DEV_MODE')=='1' and origin in ('http://localhost:8000','http://127.0.0.1:8000')
-
-def current(request:Request):
- auth=request.headers.get('Authorization','')
- if not auth.startswith('Bearer '): raise HTTPException(401,'Oturum açın')
- token=hashlib.sha256(auth[7:].encode()).hexdigest()
- now=int(time.time())
- with tx() as c:
-  row=c.execute('''SELECT s.last_activity,s.expires,s.user_id,u.* FROM sessions s
-   JOIN users u ON u.id=s.user_id LEFT JOIN device_sessions ds ON ds.token_hash=s.token_hash
-   LEFT JOIN trusted_devices d ON d.id=ds.device_id WHERE s.token_hash=? AND s.expires>?
-   AND u.active=1 AND (ds.token_hash IS NULL OR
-   (d.id IS NOT NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id))''',(token,now)).fetchone()
-  if not row:raise HTTPException(401,'Oturum geçersiz')
-  last_activity=int(row['last_activity'] or 0)
-  if last_activity and now-last_activity>=IDLE_SECONDS:
-   raise HTTPException(401,detail={'code':'SESSION_IDLE'})
-  if not last_activity:
-   last_activity=now
-   c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=?',(now,token))
-  elif request.headers.get('X-User-Interaction')=='1':
-   changed=c.execute('UPDATE sessions SET last_activity=? WHERE token_hash=? AND expires>? AND last_activity>?',
-    (now,token,now,now-IDLE_SECONDS)).rowcount
-   if not changed:raise HTTPException(401,detail={'code':'SESSION_IDLE'})
-   last_activity=now
-  user=dict(row);user['auth_last_activity']=last_activity
- return user
 
 def require(*roles):
  def f(u=Depends(current)):
@@ -271,6 +423,7 @@ def change_password(data:PasswordChange,u=Depends(current)):
   c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(u['id'],))
+  c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
   audit(c,u['id'],'password_change','user',u['id'])
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
@@ -278,7 +431,7 @@ def change_password(data:PasswordChange,u=Depends(current)):
 @app.get('/api/security/devices')
 def list_trusted_devices(u=Depends(current)):
  with tx() as c:
-  rows=c.execute('SELECT id,label,created_at,last_seen FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL ORDER BY created_at DESC',(u['id'],)).fetchall()
+  rows=c.execute("SELECT d.id,d.label,d.created_at,d.last_seen,CASE WHEN EXISTS(SELECT 1 FROM webauthn_credentials w WHERE w.device_id=d.id AND w.revoked_at IS NULL) THEN 'webauthn' ELSE 'unverified' END AS method FROM trusted_devices d WHERE d.user_id=? AND d.revoked_at IS NULL ORDER BY d.created_at DESC",(u['id'],)).fetchall()
  return {'devices':[dict(row) for row in rows]}
 
 @app.post('/api/security/devices')
@@ -339,6 +492,7 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM device_pin WHERE device_id=?',(device_id,))
+  c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL',(int(time.time()),device_id))
   audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
  return {'ok':True,'note':'Cihaz ve bağlı oturumları iptal edildi; bağlanmamış eski oturumlar etkilenmez'}
 
@@ -464,6 +618,7 @@ def edit_user(user_id:int,data:UserEdit,u=Depends(require('partner','manager')))
    c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
    c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(user_id,))
    c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(user_id,))
+   c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
    c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
   audit(c,u['id'],'update','user',user_id,{'from_title':old['job_title'],'to_title':data.job_title,'active':data.active})
  return {'ok':True}
@@ -497,6 +652,7 @@ def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
    c.execute('DELETE FROM sessions WHERE user_id=?',(item_id,))
    c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(item_id,))
    c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(item_id,))
+   c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
    c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
   c.execute(f'UPDATE {kind} SET active=0 WHERE id=?',(item_id,));audit(c,u['id'],'deactivate',kind,item_id)
  return {'ok':True}

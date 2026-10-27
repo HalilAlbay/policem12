@@ -6,3 +6,4 @@ pydantic>=2,<3
 Pillow>=10.0,<13
 
 pywebpush>=2.0,<3
+webauthn==3.0.1

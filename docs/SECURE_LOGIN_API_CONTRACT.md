@@ -30,6 +30,21 @@ Cookie-backed endpoints require `POLICEM_PUBLIC_ORIGIN` to equal the request's e
 
 P2 will specify passkey registration/login begin/finish routes with challenge IDs, exact JSON shapes, single-use challenges and configured RP/origin. P3 will specify public-key device proof plus PIN unlock; the legacy refresh body will never be accepted as proof. P4 will specify preference update and device inventory fields. P5 will specify email enrollment/verification/reset and officer reset semantics. P6 will specify device/push activation and authorized transfer. These rows must be finalized before their corresponding code/schema changes; unsupported capabilities return a generic unavailable response.
 
+## P2 WebAuthn contract (before implementation)
+
+Configuration: `POLICEM_PUBLIC_ORIGIN` must be one exact HTTPS origin with no path/query, and `WEBAUTHN_RP_ID` must be that origin's host or a valid parent RP domain. `POLICEM_DEV_MODE=1` permits only explicit localhost HTTP for local tests. The server never derives either value from `Host`. Missing or invalid configuration returns 503 `METHOD_UNAVAILABLE` without creating a usable challenge.
+
+| Method / path | Auth and request | Response / errors | DB/security effects |
+|---|---|---|---|
+| `POST /api/security/webauthn/register/options` | Bearer session + `{label,password}` fresh password step-up. | `{ceremony_id,publicKey}`; 403 step-up, 409 10-device cap, 503 config/browser method unavailable, 422 bounded data. | Generates 32 random challenge bytes, expires in 5 min, bound to exact account and current session hash. Uses `userVerification=required`, platform authenticator, resident credential, `attestation=none`; excludes that user's active credential IDs. Does not create a device yet. |
+| `POST /api/security/webauthn/register/verify` | Same bearer session + `{ceremony_id,credential}`. | `{ok:true,device:{id,label,method:'webauthn'}}`; 401 expired/wrong session, 409 duplicate credential/cap, 400 generic invalid ceremony. | Atomically consumes one challenge before verification; verifies registration server-side; inserts device and public credential in one transaction; never stores private key or raw biometric. |
+| `POST /api/security/webauthn/login/options` | Public; empty JSON body. | `{ceremony_id,publicKey}` with discoverable credential flow and user verification required; same-shaped generic response with no credentials if unavailable/config missing is 503. | Random single-use 5-min challenge. Does not identify an account before the authenticator response. |
+| `POST /api/security/webauthn/login/verify` | Public; `{ceremony_id,credential}`. | `{token,user,idle_expires_at}`; 401 generic invalid/replay/unknown/revoked/wrong-account; 429 throttled; 503 config unavailable. | Consumes the challenge; maps only an active credential to its owner; verifies signature, challenge, client-data type, exact origin, RP ID hash, user presence/UV, sign counter and discoverable user handle; atomically updates counter/last_seen and creates a device-bound 24-hour access session. Errors disclose no account/credential existence. |
+
+Challenges have unique opaque IDs, are bound to purpose, server-side expiry, and (for registration) exact session hash. Any verification attempt consumes its challenge even if invalid. Concurrent/replayed finishes therefore cannot issue sessions or register credentials. Browser JSON fields are size-capped before invoking the library. Library exceptions are mapped to generic client codes and never logged with assertion data.
+
+P2 test plan: valid generated registration and assertion vectors; wrong challenge, origin, RP ID, client-data type, missing UV, forged signature, stale counter, replay, revoked credential, cross-account user handle, duplicate credential, expired challenge, and concurrent finish. The selected login label must be “Face ID / cihaz doğrulaması”; explain iOS may allow system device passcode and synced passkeys are not physical-device-only.
+
 ## Tenant and role boundaries
 
 - A device or credential is always selected by both its ID and authenticated owner ID; mismatches return 404.
@@ -44,6 +59,17 @@ P2 will specify passkey registration/login begin/finish routes with challenge ID
 4. Make logout await server revocation and clear local credentials; make device revoke atomic across bound session/refresh/PIN records.
 5. Disable current cookie+PIN refresh until P3 implements and tests independent device possession proof.
 6. Add targeted tests for idle boundary, no background extension, lockout persistence, logout, device revoke, and durable login throttling; rerun full baseline and report existing failures separately.
+
+## P2 implementation result
+
+- Added `webauthn==3.0.1` (BSD-3-Clause; supported runtime is Python 3.12) and the additive schema v2 migration for opaque user handles, public credentials, counters, and one-use challenges.
+- Registration requires an active bearer session and fresh account password, creates a required-UV platform/resident credential with no attestation collection, and persists nothing until server verification succeeds. Duplicate credential IDs and the ten-device limit fail without partial device registration.
+- Discoverable login does not accept an account name or send account-specific allow credentials. Login verifies assertion type, challenge, exact configured origin, RP hash, UV/UP, public-key signature, counter, active owner/device, and opaque userHandle. It issues only a device-bound session after verification succeeds. Client failures remain generic.
+- `POLICEM_PUBLIC_ORIGIN` and `WEBAUTHN_RP_ID` are required and checked server-side; `Host` is never used. Missing/mismatched configuration returns 503. `POLICEM_DEV_MODE=1` is limited to explicit localhost HTTP on port 8000.
+- P2 UI presents “Face ID / cihaz doğrulaması”, requires password step-up to add a device, keeps password login available, and explains that iOS may use its device passcode or a synced passkey. It does not claim physical-device-only assurance.
+- Device revoke, password change, and account deactivation revoke associated credentials. PIN and cookie+PIN remain disabled.
+- P2 verification: `tests/test_webauthn.py` includes a generated valid P-256/ES256 registration and signed discoverable assertion through the real server verifier, config fail-closed, required UV/resident/platform options, step-up, no account selector, and consumed-invalid-challenge checks. Focused WebAuthn/session/device/legacy suite: 18 passed, 0 failed.
+- Not yet proved on a real iPhone: browser/Safari passkey UX, device passcode prompt, or deployment-origin/RP configuration. Those require final environment configuration and the requested physical acceptance test; no security success is inferred from TestClient vectors alone.
 
 ## P1 implementation result
 
