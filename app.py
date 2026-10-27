@@ -372,6 +372,10 @@ def update_renewal(policy_id:int,data:RenewalUpdate,u=Depends(current)):
    audit(c,u['id'],'renewal_'+data.status,'policy',policy_id,{'new_id':new_id})
  except sqlite3.IntegrityError:raise HTTPException(409,'Yeni poliçe numarası zaten kayıtlı')
  return {'ok':True,'new_policy_id':new_id}
+@app.get('/api/transfer/staff')
+def transfer_staff(u=Depends(require('partner','manager'))):
+ with tx() as c:
+  return [{'id':r['id'],'display_name':r['display_name'],'active':bool(r['active']),'policy_count':r['policy_count']} for r in c.execute('''SELECT u.id,u.display_name,u.active,COUNT(p.id) policy_count FROM users u LEFT JOIN policies p ON p.owner_user_id=u.id GROUP BY u.id ORDER BY u.display_name''').fetchall()]
 @app.post('/api/transfer')
 def transfer(data:Transfer,u=Depends(require('partner','manager'))):
  with tx() as c:
