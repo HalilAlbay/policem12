@@ -68,7 +68,12 @@ def audit(c,user,action,entity,eid,payload=None):
 app=FastAPI(title='Poliçem API',docs_url=None,redoc_url=None)
 app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 @app.on_event('startup')
-def startup(): init()
+def startup():
+ init()
+ if os.getenv("RENDER_SERVICE_NAME") == "policem12-push-test":
+  import logging
+  from push_service import vapid_diagnostic
+  logging.getLogger("uvicorn.error").warning("VAPID startup diagnostic: %s", vapid_diagnostic())
 @app.get('/api/health')
 def health():
  with conn() as c: c.execute('SELECT 1').fetchone()
