@@ -15,5 +15,5 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt
-      - run: python -m unittest -v test_notification_core test_push_service
+      - run: python -m unittest -v test_notification_core test_push_service test_push_integration
       - run: python -m compileall -q notification_core.py push_service.py push_job.py app.py
