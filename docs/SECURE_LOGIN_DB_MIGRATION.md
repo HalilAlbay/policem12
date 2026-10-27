@@ -66,3 +66,7 @@ Application rollback is to the pre-migration source SHA; SQLite safely ignores t
 - P6: push device/subscription association and active receiving eligibility, transfer audit/state. Existing subscription rows are migrated conservatively inactive until the user activates a device; do not delete subscriptions.
 
 For each addition: include exact SQL, foreign keys, indexes, constraints, retention, unique keys, rollback behavior, fresh/legacy fixture tests, and second-startup idempotence before applying it. Existing business tables remain additive-only.
+
+## P5 migration result
+
+The additive v5 migration adds `users.must_change_password INTEGER NOT NULL DEFAULT 0`, nullable `users.email_verified_at`, nullable `users.pending_email`, and `account_tokens` with hashed token primary key, purpose constraint, owner, email, creation/expiry/consumption timestamps, and an expiry index. Existing email addresses are unverified (`email_verified_at=NULL`) and existing users retain password login. Verification links expire after 24 hours; password reset links expire after 30 minutes. Expired token rows are pruned without touching account/business records. `auth_schema_meta.version` advances to 5.

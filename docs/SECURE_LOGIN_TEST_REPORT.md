@@ -84,6 +84,17 @@ PIN tests prove enrollment is signed by the registered P-256 key, wrong signatur
 
 P4 tests verify a selected PIN is the only quick method offered, failed passkey switching preserves the PIN selection, successful passkey switch revokes the old PIN device/key atomically, and only one inventory device is selected. Browser-level Safari PWA testing remains **NOT RUN**.
 
+## P5 — officer reset and verified email recovery
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_account_recovery.py` | 0 | **4 passed, 0 failed, 0 skipped** |
+| `.venv\\Scripts\\python.exe -m py_compile app.py` | 0 | **PASSED** |
+| `node --check static/account-recovery.js` | 0 | **PASSED** |
+| `git diff --check` | 0 | **PASSED** |
+
+Coverage: same-agency officer-issued temporary password, old-session invalidation, forced first-login password change and API lockout, cross-agency denial, audit actor/target without secret, mocked TLS SMTP verification/reset link completion, generic unknown-vs-known reset responses, single-use tokens, and fail-closed missing SMTP while normal password login remains available. Real mail delivery remains **NOT RUN** because no SMTP secrets/provider are configured.
+
 ## P1 — sessions, idle lock, logout, and device revocation
 
 | Command | Exit | Result |

@@ -1,5 +1,5 @@
 """Policem server: SQLite-backed operations. Run: uvicorn app:app --host 0.0.0.0 --port 8000"""
-import os, sqlite3, secrets, hashlib, hmac, json, re, time, threading, smtplib, sys, base64
+import os, sqlite3, secrets, hashlib, hmac, json, re, time, threading, smtplib, sys, base64, ssl
 from datetime import datetime, date, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -108,6 +108,17 @@ def init():
    updated_at INTEGER NOT NULL)''')
   c.execute('CREATE INDEX IF NOT EXISTS idx_device_login_user ON device_login_settings(user_id)')
   c.execute('UPDATE auth_schema_meta SET version=4 WHERE id=1 AND version<4')
+  user_cols={x['name'] for x in c.execute('PRAGMA table_info(users)')}
+  if 'must_change_password' not in user_cols:c.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0')
+  if 'email_verified_at' not in user_cols:c.execute('ALTER TABLE users ADD COLUMN email_verified_at INTEGER')
+  if 'pending_email' not in user_cols:c.execute('ALTER TABLE users ADD COLUMN pending_email TEXT')
+  c.execute('''CREATE TABLE IF NOT EXISTS account_tokens(
+   token_hash TEXT PRIMARY KEY,purpose TEXT NOT NULL CHECK(purpose IN ('verify_email','password_reset')),
+   user_id INTEGER NOT NULL REFERENCES users(id),email TEXT,created_at INTEGER NOT NULL,
+   expires_at INTEGER NOT NULL,consumed_at INTEGER)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_account_tokens_expiry ON account_tokens(expires_at,consumed_at)')
+  c.execute('DELETE FROM account_tokens WHERE expires_at<?',(int(time.time())-86400,))
+  c.execute('UPDATE auth_schema_meta SET version=5 WHERE id=1 AND version<5')
   c.execute('DELETE FROM webauthn_challenges WHERE expires_at<? OR consumed_at IS NOT NULL',(int(time.time())-86400,))
   c.execute('DELETE FROM pin_challenges WHERE expires_at<? OR consumed_at IS NOT NULL',(int(time.time())-86400,))
   c.execute('''CREATE TABLE IF NOT EXISTS auth_attempts(
@@ -254,6 +265,8 @@ def current(request:Request):
    if not changed:raise HTTPException(401,detail={'code':'SESSION_IDLE'})
    last_activity=now
   user=dict(row);user['auth_last_activity']=last_activity
+  if user.get('must_change_password') and request.url.path not in ('/api/me','/api/password','/api/logout'):
+   raise HTTPException(403,detail={'code':'PASSWORD_CHANGE_REQUIRED'})
  return user
 
 def webauthn_config():
@@ -375,7 +388,7 @@ def webauthn_login_verify(data:WebAuthnLoginVerify,request:Request):
  raw_id=checked_credential(data.credential)
  credential_id=bytes_to_base64url(raw_id)
  with tx() as c:
-  row=c.execute('''SELECT wc.*,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.phone,u.start_date,u.job_title,u.webauthn_user_handle,d.label
+   row=c.execute('''SELECT wc.*,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.email_verified_at,u.must_change_password,u.phone,u.start_date,u.job_title,u.webauthn_user_handle,d.label
     FROM webauthn_credentials wc JOIN users u ON u.id=wc.user_id JOIN trusted_devices d ON d.id=wc.device_id
    JOIN device_login_settings s ON s.device_id=d.id AND s.method='webauthn'
    WHERE wc.credential_id=? AND wc.revoked_at IS NULL AND d.revoked_at IS NULL AND d.user_id=wc.user_id
@@ -396,7 +409,8 @@ def webauthn_login_verify(data:WebAuthnLoginVerify,request:Request):
   c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,row['device_id']))
   c.execute('UPDATE trusted_devices SET last_seen=? WHERE id=?',(now,row['device_id']))
   audit(c,row['user_id'],'webauthn_login','trusted_device',None,{'device_id':row['device_id']})
- user={'id':row['user_id'],'username':row['username'],'display_name':row['display_name'],'role':row['role'],'branch_id':row['branch_id'],'theme':row['theme'],'email':row['email'],'phone':row['phone'],'start_date':row['start_date'],'job_title':row['job_title'],'active':row['active']}
+ user={'id':row['user_id'],'username':row['username'],'display_name':row['display_name'],'role':row['role'],'branch_id':row['branch_id'],'theme':row['theme'],'email':row['email'],'email_verified_at':row['email_verified_at'],'must_change_password':row['must_change_password'],'phone':row['phone'],'start_date':row['start_date'],'job_title':row['job_title'],'active':row['active']}
+ user['must_change_password']=bool(user['must_change_password'])
  return {'token':token,'user':user,'idle_expires_at':now+IDLE_SECONDS}
 
 def pin_signing_message(purpose,ceremony_id,device_id,challenge):
@@ -510,7 +524,7 @@ def pin_login_verify(data:PinLoginVerify):
  with tx() as c:
   challenge=consume_pin_challenge(c,data.ceremony_id,'login',data.device_id,installation_id=data.installation_id)
   if not challenge:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
-  row=c.execute('''SELECT k.user_id,k.public_key,d.label,d.revoked_at,p.pin_hash,p.failures,p.locked_at,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.phone,u.start_date,u.job_title
+  row=c.execute('''SELECT k.user_id,k.public_key,d.label,d.revoked_at,p.pin_hash,p.failures,p.locked_at,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.email_verified_at,u.must_change_password,u.phone,u.start_date,u.job_title
    FROM pin_device_keys k JOIN trusted_devices d ON d.id=k.device_id JOIN device_pin p ON p.device_id=k.device_id
    JOIN users u ON u.id=k.user_id WHERE k.device_id=? AND k.user_id=d.user_id AND p.device_id=d.id''',(data.device_id,)).fetchone()
  if not row or row['revoked_at'] is not None or not row['active'] or row['locked_at'] is not None:
@@ -536,12 +550,17 @@ def pin_login_verify(data:PinLoginVerify):
   c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,data.device_id))
   c.execute('UPDATE trusted_devices SET last_seen=? WHERE id=?',(now,data.device_id))
   audit(c,row['user_id'],'pin_login','trusted_device',None,{'device_id':data.device_id})
- user={k:row[k] for k in ('username','display_name','role','branch_id','theme','email','phone','start_date','job_title','active')};user['id']=row['user_id']
+ user={k:row[k] for k in ('username','display_name','role','branch_id','theme','email','email_verified_at','must_change_password','phone','start_date','job_title','active')};user['id']=row['user_id']
+ user['must_change_password']=bool(user['must_change_password'])
  return {'token':token,'user':user,'idle_expires_at':now+IDLE_SECONDS}
 class RefreshEnroll(BaseModel):device_id:str;password:str
 class PinEnroll(BaseModel):device_id:str;password:str;pin:str
 class PinRefresh(BaseModel):pin:str
 class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
+class EmailVerificationRequest(BaseModel):email:str=Field(min_length=3,max_length=254);password:str=Field(min_length=1,max_length=256)
+class PasswordResetRequest(BaseModel):email:str=Field(min_length=3,max_length=254)
+class PasswordResetComplete(BaseModel):token:str=Field(min_length=32,max_length=128);password:str=Field(min_length=12,max_length=256)
+class OneTimeToken(BaseModel):token:str=Field(min_length=32,max_length=128)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
 class NewUser(BaseModel):username:str;display_name:str;password:str=Field(min_length=12);role:str;branch_id:int|None=None;email:str|None=None;phone:str|None=None;start_date:date|None=None;job_title:str|None=None
@@ -597,7 +616,10 @@ def login(data:Login,request:Request):
    (hashlib.sha256(token.encode()).hexdigest(),u['id'],now+86400,now))
  return {'token':token,'user':public_user(dict(u)),'idle_expires_at':now+IDLE_SECONDS}
 
-def public_user(u):return {k:u.get(k) for k in ['id','username','display_name','role','branch_id','theme','email','active','phone','start_date','job_title']}
+def public_user(u):
+ out={k:u.get(k) for k in ['id','username','display_name','role','branch_id','theme','email','email_verified_at','active','phone','start_date','job_title','must_change_password']}
+ out['must_change_password']=bool(out['must_change_password'])
+ return out
 @app.get('/api/me')
 def me(u=Depends(current)):return public_user(u)|{'idle_expires_at':u['auth_last_activity']+IDLE_SECONDS}
 @app.post('/api/logout')
@@ -617,7 +639,7 @@ def logout(request:Request,response:Response,u=Depends(current)):
 def change_password(data:PasswordChange,u=Depends(current)):
  if not check_pw(data.old,u['password_hash']):raise HTTPException(400,'Mevcut şifre yanlış')
  with tx() as c:
-  c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.new),u['id']))
+  c.execute('UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?',(password_hash(data.new),u['id']))
   c.execute('DELETE FROM sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(u['id'],))
@@ -627,6 +649,119 @@ def change_password(data:PasswordChange,u=Depends(current)):
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
   audit(c,u['id'],'password_change','user',u['id'])
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
+
+def valid_email(value):
+ return bool(re.fullmatch(r'[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+',value or '')) and len(value)<=254
+
+def mail_security_config():
+ origin=os.getenv('POLICEM_PUBLIC_ORIGIN','')
+ try:
+  parsed=urlsplit(origin)
+  if parsed.scheme!='https' or not parsed.hostname or parsed.path not in ('','/') or parsed.query or parsed.fragment or parsed.username or parsed.password or parsed.port not in (None,443) or origin!=f'https://{parsed.netloc}':return None
+  port=int(os.getenv('SMTP_PORT','587'))
+  if not 1<=port<=65535:return None
+ except (ValueError,TypeError):return None
+ names=('SMTP_HOST','SMTP_FROM','SMTP_USER','SMTP_PASSWORD')
+ if not all(os.getenv(name) for name in names):return None
+ return origin,os.environ['SMTP_HOST'],port,os.environ['SMTP_FROM'],os.environ['SMTP_USER'],os.environ['SMTP_PASSWORD']
+
+def send_security_email(recipient,subject,token,purpose):
+ cfg=mail_security_config()
+ if not cfg:raise HTTPException(503,detail={'code':'EMAIL_UNAVAILABLE'})
+ origin,host,port,sender,username,password=cfg
+ fragment='verify-email=' if purpose=='verify_email' else 'reset-password='
+ url=origin+'/#'+fragment+token
+ body=('Verify your Poliçem email address using this one-time link (valid for 24 hours):\n' if purpose=='verify_email'
+       else 'Reset your Poliçem password using this one-time link (valid for 30 minutes):\n')+url+'\n\nIf you did not request this, ignore this message.'
+ message=EmailMessage();message['Subject']=subject;message['From']=sender;message['To']=recipient;message.set_content(body)
+ try:
+  with smtplib.SMTP(host,port,timeout=15) as smtp:
+   smtp.ehlo();smtp.starttls(context=ssl.create_default_context());smtp.ehlo();smtp.login(username,password);smtp.send_message(message)
+ except Exception:
+  raise HTTPException(503,detail={'code':'EMAIL_UNAVAILABLE'})
+
+def check_mail_rate(request):
+ now=int(time.time());ip=request.client.host if request.client else 'unknown';key=hashlib.sha256(('account-mail-ip:'+ip).encode()).hexdigest()
+ with tx() as c:
+  row=c.execute('SELECT attempts,window_started FROM auth_attempts WHERE scope_hash=?',(key,)).fetchone()
+  if row and now-int(row['window_started'])<900 and int(row['attempts'])>=10:raise HTTPException(429,detail={'code':'RATE_LIMITED'})
+  c.execute('''INSERT INTO auth_attempts(scope_hash,attempts,window_started,updated_at) VALUES (?,1,?,?)
+   ON CONFLICT(scope_hash) DO UPDATE SET attempts=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN 1 ELSE auth_attempts.attempts+1 END,
+   window_started=CASE WHEN excluded.updated_at-auth_attempts.window_started>=900 THEN excluded.updated_at ELSE auth_attempts.window_started END,updated_at=excluded.updated_at''',(key,now,now))
+
+def create_account_token(c,user_id,purpose,email,now,ttl):
+ c.execute('UPDATE account_tokens SET consumed_at=? WHERE user_id=? AND purpose=? AND consumed_at IS NULL',(now,user_id,purpose))
+ raw=secrets.token_urlsafe(32);digest=hashlib.sha256(raw.encode()).hexdigest()
+ c.execute('INSERT INTO account_tokens(token_hash,purpose,user_id,email,created_at,expires_at) VALUES (?,?,?,?,?,?)',(digest,purpose,user_id,email,now,now+ttl))
+ return raw
+
+@app.get('/api/account/email/status')
+def email_status(u=Depends(current)):
+ return {'email':u.get('email'),'verified':bool(u.get('email_verified_at')),'email_available':bool(mail_security_config())}
+
+@app.post('/api/account/email/verification/request')
+def request_email_verification(data:EmailVerificationRequest,request:Request,u=Depends(current)):
+ if not valid_email(data.email):raise HTTPException(422,detail={'code':'INVALID_EMAIL'})
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,detail={'code':'STEP_UP_REQUIRED'})
+ cfg=mail_security_config()
+ if not cfg:raise HTTPException(503,detail={'code':'EMAIL_UNAVAILABLE'})
+ check_mail_rate(request)
+ email=data.email.strip().casefold();now=int(time.time())
+ with tx() as c:
+  if c.execute('SELECT 1 FROM users WHERE email=? AND email_verified_at IS NOT NULL AND id<>?',(email,u['id'])).fetchone():raise HTTPException(409,detail={'code':'EMAIL_IN_USE'})
+  raw=create_account_token(c,u['id'],'verify_email',email,now,86400)
+  c.execute('UPDATE users SET pending_email=? WHERE id=?',(email,u['id']))
+ try:send_security_email(email,'Verify your Poliçem email',raw,'verify_email')
+ except HTTPException:
+  with tx() as c:c.execute('UPDATE account_tokens SET consumed_at=? WHERE token_hash=?',(int(time.time()),hashlib.sha256(raw.encode()).hexdigest()))
+  raise
+ return {'ok':True,'message':'Doğrulama bağlantısı e-posta adresine gönderildi.'}
+
+@app.post('/api/account/email/verification/complete')
+def complete_email_verification(data:OneTimeToken):
+ raw=data.token;digest=hashlib.sha256(raw.encode()).hexdigest();now=int(time.time())
+ with tx() as c:
+  row=c.execute("SELECT t.*,u.pending_email FROM account_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.purpose='verify_email' AND t.consumed_at IS NULL AND t.expires_at>?",(digest,now)).fetchone()
+  if not row or not row['pending_email'] or not hmac.compare_digest(row['pending_email'],row['email']):raise HTTPException(400,detail={'code':'INVALID_OR_EXPIRED_TOKEN'})
+  changed=c.execute('UPDATE account_tokens SET consumed_at=? WHERE token_hash=? AND consumed_at IS NULL',(now,digest)).rowcount
+  if changed!=1:raise HTTPException(400,detail={'code':'INVALID_OR_EXPIRED_TOKEN'})
+  duplicate=c.execute('SELECT 1 FROM users WHERE email=? AND email_verified_at IS NOT NULL AND id<>?',(row['email'],row['user_id'])).fetchone()
+  if duplicate:raise HTTPException(409,detail={'code':'EMAIL_IN_USE'})
+  c.execute('UPDATE users SET email=?,email_verified_at=?,pending_email=NULL WHERE id=?',(row['email'],now,row['user_id']))
+  audit(c,row['user_id'],'email_verified','user',row['user_id'])
+ return {'ok':True}
+
+@app.post('/api/account/password-reset/request')
+def request_password_reset(data:PasswordResetRequest,request:Request):
+ if not valid_email(data.email):raise HTTPException(422,detail={'code':'INVALID_EMAIL'})
+ if not mail_security_config():raise HTTPException(503,detail={'code':'EMAIL_UNAVAILABLE'})
+ check_mail_rate(request);email=data.email.strip().casefold();now=int(time.time());raw=None
+ with tx() as c:
+  row=c.execute('SELECT id FROM users WHERE email=? AND email_verified_at IS NOT NULL AND active=1',(email,)).fetchone()
+  if row:raw=create_account_token(c,row['id'],'password_reset',email,now,1800)
+ if raw:
+  try:send_security_email(email,'Reset your Poliçem password',raw,'password_reset')
+  except HTTPException:
+   with tx() as c:c.execute('UPDATE account_tokens SET consumed_at=? WHERE token_hash=?',(int(time.time()),hashlib.sha256(raw.encode()).hexdigest()))
+   # Keep status and body indistinguishable from unknown or unverified addresses.
+ return {'ok':True,'message':'Eğer bu adres doğrulanmış bir hesaba aitse sıfırlama bağlantısı gönderildi.'}
+
+@app.post('/api/account/password-reset/complete')
+def complete_password_reset(data:PasswordResetComplete):
+ digest=hashlib.sha256(data.token.encode()).hexdigest();now=int(time.time())
+ with tx() as c:
+  row=c.execute("SELECT user_id FROM account_tokens WHERE token_hash=? AND purpose='password_reset' AND consumed_at IS NULL AND expires_at>?",(digest,now)).fetchone()
+  if not row:raise HTTPException(400,detail={'code':'INVALID_OR_EXPIRED_TOKEN'})
+  if c.execute('UPDATE account_tokens SET consumed_at=? WHERE token_hash=? AND consumed_at IS NULL',(now,digest)).rowcount!=1:raise HTTPException(400,detail={'code':'INVALID_OR_EXPIRED_TOKEN'})
+  user_id=row['user_id'];c.execute('UPDATE users SET password_hash=?,must_change_password=0 WHERE id=?',(password_hash(data.password),user_id))
+  c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,));c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(user_id,))
+  c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(user_id,))
+  c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(now,user_id))
+  c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(now,user_id))
+  c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(now,user_id))
+  c.execute('DELETE FROM device_login_settings WHERE user_id=?',(user_id,))
+  audit(c,user_id,'email_password_reset','user',user_id)
+ return {'ok':True}
 # Device inventory is NOT an authentication factor yet. No device bearer credentials are issued.
 @app.get('/api/security/devices')
 def list_trusted_devices(u=Depends(current)):
@@ -789,13 +924,14 @@ def manage_users(u=Depends(require('partner','manager'))):
 
 @app.post('/api/users')
 def add_user(data:NewUser,u=Depends(require('partner','manager'))):
+ if data.email and not valid_email(data.email):raise HTTPException(422,detail={'code':'INVALID_EMAIL'})
  title=data.job_title or {'partner':'agency_authority','manager':'agency_manager','staff':'technical'}.get(data.role)
  check_job_permission(u,title)
  if JOB_ROLES[title]!=data.role:raise HTTPException(400,'Rol ve unvan uyuşmuyor')
  if not data.phone or not data.phone.strip() or not data.start_date:raise HTTPException(400,'Telefon ve işe başlama tarihi zorunlu')
  try:
   with tx() as c:
-   cur=c.execute('INSERT INTO users(username,display_name,role,password_hash,branch_id,email,phone,start_date,job_title) VALUES (?,?,?,?,?,?,?,?,?)',(data.username,data.display_name.strip(),data.role,password_hash(data.password),data.branch_id,data.email,data.phone.strip(),str(data.start_date),title))
+   cur=c.execute('INSERT INTO users(username,display_name,role,password_hash,branch_id,email,phone,start_date,job_title) VALUES (?,?,?,?,?,?,?,?,?)',(data.username,data.display_name.strip(),data.role,password_hash(data.password),data.branch_id,data.email.strip().casefold() if data.email else None,data.phone.strip(),str(data.start_date),title))
    audit(c,u['id'],'create','user',cur.lastrowid,{'job_title':title})
   return {'id':cur.lastrowid}
  except sqlite3.IntegrityError:raise HTTPException(409,'Kullanıcı adı zaten kayıtlı')
@@ -830,14 +966,24 @@ def edit_user(user_id:int,data:UserEdit,u=Depends(require('partner','manager')))
 @app.post('/api/users/{user_id}/reset-password')
 def reset_staff_password(user_id:int,data:AdminPasswordReset,u=Depends(require('partner','manager'))):
  with tx() as c:
-  target=c.execute('SELECT id,role,active FROM users WHERE id=?',(user_id,)).fetchone()
+  target=c.execute('SELECT id,role,active,branch_id FROM users WHERE id=?',(user_id,)).fetchone()
   if not target or not target['active']:raise HTTPException(404,'Aktif kullanıcı bulunamadı')
   if user_id==u['id']:raise HTTPException(400,'Kendi şifrenizi Ayarlar bölümünden değiştirin')
   if u['role']=='manager' and target['role']!='staff':raise HTTPException(403,'Bu hesabın şifresini değiştirme yetkiniz yok')
-  c.execute('UPDATE users SET password_hash=? WHERE id=?',(password_hash(data.password),user_id))
+  actor_agency=c.execute('SELECT agency_id FROM branches WHERE id=?',(u['branch_id'],)).fetchone() if u.get('branch_id') else None
+  target_agency=c.execute('SELECT agency_id FROM branches WHERE id=?',(target['branch_id'],)).fetchone() if target['branch_id'] else None
+  if not actor_agency or not target_agency or actor_agency['agency_id']!=target_agency['agency_id']:
+   raise HTTPException(403,'Aynı acente sınırı doğrulanamadı')
+  c.execute('UPDATE users SET password_hash=?,must_change_password=1 WHERE id=?',(password_hash(data.password),user_id))
   c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
-  audit(c,u['id'],'reset_password','user',user_id)
- return {'ok':True}
+  c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(user_id,))
+  c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(user_id,))
+  c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
+  c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
+  c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
+  c.execute('DELETE FROM device_login_settings WHERE user_id=?',(user_id,))
+  audit(c,u['id'],'reset_password','user',user_id,{'temporary_password_change_required':True})
+ return {'ok':True,'must_change_password':True}
 
 @app.delete('/api/{kind}/{item_id}')
 def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
