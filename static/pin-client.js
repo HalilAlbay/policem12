@@ -3,12 +3,18 @@
   const DB_NAME = 'policem-device-proof-v1';
   const STORE = 'keys';
   const DEVICE_KEY = 'policem_pin_device_id';
+  const INSTALL_KEY = 'policem_installation_id';
   const enc = new TextEncoder();
   const b64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
   const un64 = s => {
     const raw = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
     return Uint8Array.from(raw, c => c.charCodeAt(0));
   };
+  function installationId() {
+    let id = localStorage.getItem(INSTALL_KEY);
+    if (!id) { id = b64(crypto.getRandomValues(new Uint8Array(24))); localStorage.setItem(INSTALL_KEY, id); }
+    return id;
+  }
   function db() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, 1);
@@ -51,19 +57,20 @@
       if (!/^\d{4}$/.test(pin) || pin !== confirmPin) throw Error('PIN’ler aynı ve dört rakam olmalıdır.');
       const label = $('quickDeviceName').value.trim();
       if (!label) throw Error('Önce cihaz adını yazın.');
-      const begin = await api('security/pin/enroll/options', 'POST', { label, password: $('quickPassword').value });
+      const begin = await api('security/pin/enroll/options', 'POST', { label, password: $('quickPassword').value, installation_id: installationId() });
       const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
       const publicKey = await crypto.subtle.exportKey('jwk', pair.publicKey);
       await keyStore('readwrite', begin.device_id, pair.privateKey);
       try {
         const signature = await sign(pair.privateKey, 'enroll', begin.ceremony_id, begin.device_id, begin.challenge);
         await api('security/pin/enroll/verify', 'POST', {
-          ceremony_id: begin.ceremony_id, device_id: begin.device_id, public_key: publicKey,
+          ceremony_id: begin.ceremony_id, device_id: begin.device_id, installation_id: installationId(), public_key: publicKey,
           pin, pin_confirm: confirmPin, signature
         });
         localStorage.setItem(DEVICE_KEY, begin.device_id);
         $('quickPassword').value = '';
         showPinUnlock();
+        window.refreshLoginMethodUI?.();
         await loadSecurityDevices();
         msg('PIN ile güvenilir cihaz kaydedildi');
       } catch (error) {
@@ -84,10 +91,11 @@
       if (!privateKey) throw Error('Cihaz anahtarı bulunamadı. Şifreyle giriş yapıp PIN’i yeniden kurun.');
       const pin = $('pinUnlockValue').value;
       if (!/^\d{4}$/.test(pin)) throw Error('Dört haneli PIN girin.');
-      const begin = await api('security/pin/login/options', 'POST', { device_id: deviceId });
+      const begin = await api('security/pin/login/options', 'POST', { installation_id: installationId() });
+      if (begin.device_id !== deviceId) throw Error('Bu kurulumun cihaz anahtarı eşleşmiyor. Şifreyle giriş yapın.');
       const signature = await sign(privateKey, 'login', begin.ceremony_id, deviceId, begin.challenge);
       const result = await api('security/pin/login/verify', 'POST', {
-        device_id: deviceId, ceremony_id: begin.ceremony_id, pin, signature
+        device_id: deviceId, installation_id: installationId(), ceremony_id: begin.ceremony_id, pin, signature
       });
       $('pinUnlockValue').value = '';
       token = result.token; user = result.user; sessionLocked = false; lastUserInteractionAt = Date.now();
@@ -109,6 +117,7 @@
   }
   window.enrollPin = enrollPin;
   window.pinLogin = pinLogin;
+  window.policeInstallationId = installationId;
   setupPinUI();
   if (token) setTimeout(setupPinUI, 0);
 })();

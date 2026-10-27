@@ -51,6 +51,8 @@ P2 migration verification: generated EC2/ES256 registration and discoverable-log
 
 The additive v3 migration creates `pin_device_keys` (device/user ownership, public JWK, creation/revocation timestamps) and `pin_challenges` (purpose, challenge, device/account/session binding, label, expiry, consumed timestamp). Existing `device_pin` stores only a salted scrypt hash plus persistent failures/lock time; it remains per-device. No existing account, session, policy, or notification data is removed. PIN lock state survives app restarts and is cleared only by authorized password recovery or replacement enrollment. `auth_schema_meta.version` advances to 3.
 
+The additive v4 migration adds `trusted_devices.installation_id`, challenge installation binding, and `device_login_settings` with one selected `(installation) -> (user, device, method)` row. Existing trusted devices migrate to `installation_id=device_id` and are not automatically selected, so all existing users retain password login until they enroll/select on the current installation. Revoking or replacing a device deletes its selection in the same transaction. `auth_schema_meta.version` advances to 4.
+
 ## Rollback
 
 Application rollback is to the pre-migration source SHA; SQLite safely ignores the added column and tables, so no destructive reverse migration is needed. Do not drop migration tables/columns because a previous binary may have already written rows. When rolling back to code that predates idle enforcement, old binaries ignore `sessions.last_activity` and `auth_attempts`. Preserve a database backup according to the deployment's existing persistence procedure before any eventual production migration; no deployment is in scope here.

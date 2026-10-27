@@ -72,6 +72,18 @@ Test warnings: FastAPI `on_event` and Starlette TestClient/httpx deprecations; n
 
 PIN tests prove enrollment is signed by the registered P-256 key, wrong signatures do not consume PIN guesses, five device-signed incorrect PINs lock the persisted grant, correct PIN issues a device-bound session, and revoke invalidates that session. PIN uses a WebCrypto non-extractable key in IndexedDB and never calls WebAuthn/Face ID. iOS Safari/PWA CryptoKey persistence still requires the user’s device acceptance test; if unavailable, PIN falls back to account password and must not be described as enabled on that install.
 
+## P4 — selected method, switching, and device/PWA settings
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_webauthn.py tests/test_auth_session.py tests/test_device_sessions.py tests/test_quick_login.py` | 0 | **21 passed, 0 failed, 0 skipped** |
+| `.venv\\Scripts\\python.exe -m py_compile app.py` | 0 | **PASSED** |
+| `node --check static/pin-client.js` | 0 | **PASSED** |
+| `node --check static/login-preference.js` | 0 | **PASSED** |
+| `git diff --check` | 0 | **PASSED** |
+
+P4 tests verify a selected PIN is the only quick method offered, failed passkey switching preserves the PIN selection, successful passkey switch revokes the old PIN device/key atomically, and only one inventory device is selected. Browser-level Safari PWA testing remains **NOT RUN**.
+
 ## P1 — sessions, idle lock, logout, and device revocation
 
 | Command | Exit | Result |
