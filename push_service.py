@@ -4,6 +4,7 @@ Requires pywebpush and VAPID env configuration. Subscription endpoints are bound
 to the authenticated user ID supplied by the existing app's current() dependency.
 """
 import json
+import logging
 import os
 import sqlite3
 from urllib.parse import urlsplit
@@ -66,15 +67,20 @@ def build_router(tx, current):
         if not rows:
             raise HTTPException(409, "Önce bu cihazda bildirimleri açın")
         sent = 0
+        failure_types = []
         for sub in rows:
             try:
                 send_push(sub, {"notification_id": "test-" + str(user["id"]),
                                 "message": "Poliçem TEST bildirimi"})
                 sent += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                # Log only the exception type, never VAPID secrets or subscription endpoints.
+                failure_types.append(type(exc).__name__)
+                logging.getLogger("uvicorn.error").error(
+                    "Push test failed: type=%s", type(exc).__name__)
         if not sent:
-            raise HTTPException(502, "Test bildirimi gönderilemedi")
+            raise HTTPException(502, "Test bildirimi gönderilemedi (" +
+                                ", ".join(sorted(set(failure_types))) + ")")
         return {"ok": True, "sent": sent}
 
     @router.post("/subscribe")
