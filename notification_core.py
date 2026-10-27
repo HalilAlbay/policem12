@@ -6,7 +6,7 @@ permission UI and a durable retryable outbox. This module does not send pushes.
 from datetime import date
 from typing import Iterable
 
-DEFAULT_DAYS = (30, 15, 7, 1)
+DEFAULT_DAYS = (15, 7, 1)
 CLOSED_STATUSES = frozenset(("policelestirildi", "kaybedildi"))
 
 def due_notifications(policies: Iterable[dict], today: date,
