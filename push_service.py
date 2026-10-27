@@ -18,10 +18,17 @@ class Subscription(BaseModel):
     endpoint: str = Field(min_length=20, max_length=2048)
     keys: SubscriptionKeys
 
+PUSH_HOSTS = frozenset(('fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com', 'push.services.mozilla.com'))
+
+def _trusted_push_host(hostname: str) -> bool:
+    host = hostname.lower().rstrip('.')
+    return host in PUSH_HOSTS or host.endswith('.push.apple.com')
+
 def valid_endpoint(endpoint: str) -> bool:
     try:
         parsed = urlsplit(endpoint)
         return (parsed.scheme == "https" and bool(parsed.hostname)
+                and _trusted_push_host(parsed.hostname)
                 and not parsed.username and not parsed.password
                 and parsed.port in (None, 443)
                 and not parsed.fragment)
