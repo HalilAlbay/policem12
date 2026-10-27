@@ -70,7 +70,7 @@ async function policemSyncExistingPush() {
   const cfg = await api('push/config');
   if (!cfg.test_enabled) return;
   await api('push/subscribe', 'POST', sub.toJSON());
-  await api('push/test', 'POST', {});
+  // Policy expiry notifications are delivered by the server schedule.
 }
 let policemPushBootTriggered = false;
 const policemPushBootObserver = new MutationObserver(() => {
