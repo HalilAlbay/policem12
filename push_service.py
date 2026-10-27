@@ -173,6 +173,12 @@ def send_push(subscription: dict, payload: dict):
         from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
         private_key = ec.derive_private_key(int.from_bytes(raw, "big"), ec.SECP256R1())
         key = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
+    if "BEGIN" in key:
+        from cryptography.hazmat.primitives import serialization
+        private_key = serialization.load_pem_private_key(key.encode(), password=None)
+        key = base64.urlsafe_b64encode(private_key.private_bytes(
+            serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption())).decode("ascii").rstrip("=")
     return webpush(
         subscription_info={"endpoint": subscription["endpoint"],
                            "keys": {"p256dh": subscription["p256dh"],
