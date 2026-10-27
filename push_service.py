@@ -5,6 +5,7 @@ to the authenticated user ID supplied by the existing app's current() dependency
 """
 import json
 import logging
+import traceback
 import base64
 import binascii
 import os
