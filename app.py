@@ -225,8 +225,10 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   row=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(device_id,u['id'])).fetchone()
   if not row:raise HTTPException(404,'Cihaz bulunamadı')
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE id=? AND user_id=?',(int(time.time()),device_id,u['id']))
+  c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device_id,))
+  c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
   audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
- return {'ok':True,'note':'Cihaz kaydı iptal edildi; mevcut klasik oturumlar bu kayda bağlı değildir'}
+ return {'ok':True,'note':'Cihaz ve bağlı oturumları iptal edildi; bağlanmamış eski oturumlar etkilenmez'}
 
 @app.post('/api/theme')
 def theme(data:Theme,u=Depends(current)):
