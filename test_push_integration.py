@@ -22,13 +22,20 @@ class PushIntegrationTests(unittest.TestCase):
         app.DB = Path(self.temp.name) / "test.sqlite3"
         app.init()
         with app.tx() as c:
-            c.execute("INSERT INTO users(username,display_name,role,password_hash,branch_id) VALUES ('u1','User 1','staff','test',1)")
-            c.execute("INSERT INTO users(username,display_name,role,password_hash,branch_id) VALUES ('u2','User 2','staff','test',1)")
+            c.execute("INSERT INTO users(username,display_name,role,password_hash,branch_id) VALUES ('u1','User 1','staff',?,1)",(app.password_hash('Password12345'),))
+            c.execute("INSERT INTO users(username,display_name,role,password_hash,branch_id) VALUES ('u2','User 2','staff',?,1)",(app.password_hash('Password12345'),))
             self.user1 = c.execute("SELECT id FROM users WHERE username='u1'").fetchone()[0]
             self.user2 = c.execute("SELECT id FROM users WHERE username='u2'").fetchone()[0]
             for uid, token in [(self.user1, 'token1'), (self.user2, 'token2')]:
                 c.execute("INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)",
                           (hashlib.sha256(token.encode()).hexdigest(), uid, 4102444800))
+                device_id = 'device-' + str(uid)
+                c.execute("INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen,installation_id) VALUES (?,?,?,?,?,?)",
+                          (device_id, uid, 'Test device', 1, 1, 'install-' + str(uid)))
+                c.execute("INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)",
+                          (hashlib.sha256(token.encode()).hexdigest(), device_id))
+                c.execute("INSERT INTO device_login_settings(installation_id,user_id,device_id,method,updated_at) VALUES (?,?,?,?,?)",
+                          ('install-' + str(uid), uid, device_id, 'pin', 1))
             c.execute("""INSERT INTO policies(agency_id,branch_id,owner_user_id,uploader_user_id,
                 customer_name,policy_type,policy_number,insurer,premium,start_date,end_date,
                 issued_date,tracking) VALUES (1,1,?,?, 'Test customer','Kasko','TEST-001',
@@ -69,6 +76,32 @@ class PushIntegrationTests(unittest.TestCase):
             row=c.execute("SELECT user_id FROM push_subscriptions").fetchone()
         self.assertEqual(row[0],self.user1)
 
+    def test_password_only_session_cannot_activate_push(self):
+        token='password-only-session'
+        with app.tx() as c:
+            c.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',
+                      (hashlib.sha256(token.encode()).hexdigest(),self.user1,4102444800))
+        response=self.client.post('/api/push/subscribe',headers={'Authorization':'Bearer '+token},
+                                  json={'endpoint':ENDPOINT,'keys':KEYS})
+        self.assertEqual(response.status_code,403,response.text)
+        with app.tx() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM push_subscriptions').fetchone()[0],0)
+
+    def test_legacy_subscription_is_inactive_until_device_reactivation(self):
+        with app.tx() as c:
+            c.execute('''CREATE TABLE push_subscriptions (
+                id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),
+                endpoint TEXT NOT NULL UNIQUE,p256dh TEXT NOT NULL,auth TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+            c.execute('INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(?,?,?,?)',
+                      (self.user1,ENDPOINT,KEYS['p256dh'],KEYS['auth']))
+        with app.tx() as c:
+            from push_service import ensure_schema
+            ensure_schema(c)
+            row=c.execute('SELECT device_id,active FROM push_subscriptions').fetchone()
+        self.assertIsNone(row['device_id'])
+        self.assertEqual(row['active'],0)
+
     def test_other_user_cannot_claim_existing_device(self):
         self.assertEqual(self.subscribe().status_code,200)
         self.assertEqual(self.subscribe(user=2).status_code,409)
@@ -89,6 +122,40 @@ class PushIntegrationTests(unittest.TestCase):
             self.assertEqual(push_job.tick(TODAY)["sent"],0)
             self.assertEqual(send.call_count,1)
             self.assertNotIn("Test customer",str(send.call_args))
+
+    def test_logout_suppresses_the_device_subscription(self):
+        self.subscribe()
+        response=self.request('POST','/api/logout')
+        self.assertEqual(response.status_code,200,response.text)
+        with patch.object(push_job,"send_push") as send:
+            self.assertEqual(push_job.tick(TODAY)["sent"],0)
+            send.assert_not_called()
+
+    def test_revoked_device_subscription_is_not_delivered(self):
+        self.subscribe()
+        did='device-' + str(self.user1)
+        response=self.request('POST',f'/api/security/devices/{did}/revoke',json={'password':'Password12345'})
+        self.assertEqual(response.status_code,200,response.text)
+        with patch.object(push_job,"send_push") as send:
+            self.assertEqual(push_job.tick(TODAY)["sent"],0)
+            send.assert_not_called()
+
+    def test_one_logged_out_device_does_not_suppress_another_active_device(self):
+        self.subscribe()
+        token='second-device-session'
+        token_hash=hashlib.sha256(token.encode()).hexdigest()
+        with app.tx() as c:
+            c.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',(token_hash,self.user1,4102444800))
+            c.execute("INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen,installation_id) VALUES ('device-u1-second',?,'Second',1,1,'install-u1-second')",(self.user1,))
+            c.execute("INSERT INTO device_sessions(token_hash,device_id) VALUES (?,'device-u1-second')",(token_hash,))
+            c.execute("INSERT INTO device_login_settings(installation_id,user_id,device_id,method,updated_at) VALUES ('install-u1-second',?,'device-u1-second','pin',1)",(self.user1,))
+        second={'Authorization':'Bearer '+token}
+        response=self.client.post('/api/push/subscribe',headers=second,json={'endpoint':ENDPOINT+'-second','keys':KEYS})
+        self.assertEqual(response.status_code,200,response.text)
+        self.request('POST','/api/logout')
+        with patch.object(push_job,"send_push") as send:
+            self.assertEqual(push_job.tick(TODAY)["sent"],1)
+            self.assertEqual(send.call_count,1)
 
     def test_closed_renewal_not_sent(self):
         self.subscribe()

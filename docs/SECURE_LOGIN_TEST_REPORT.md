@@ -95,6 +95,17 @@ P4 tests verify a selected PIN is the only quick method offered, failed passkey 
 
 Coverage: same-agency officer-issued temporary password, old-session invalidation, forced first-login password change and API lockout, cross-agency denial, audit actor/target without secret, mocked TLS SMTP verification/reset link completion, generic unknown-vs-known reset responses, single-use tokens, and fail-closed missing SMTP while normal password login remains available. Real mail delivery remains **NOT RUN** because no SMTP secrets/provider are configured.
 
+## P6 — device-scoped notification eligibility
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m pytest -q test_push_service.py test_push_integration.py tests/test_device_sessions.py tests/test_quick_login.py` | 0 | **23 passed, 0 failed, 0 skipped** after device-scoped cases were added. |
+| `node --check static/push-client.js` | 0 | **PASSED** |
+| `.venv\\Scripts\\python.exe -m py_compile app.py push_service.py push_job.py` | 0 | **PASSED** |
+| `git diff --check` | 0 | **PASSED** |
+
+Coverage includes password-only session denial, fail-closed migration of legacy subscriptions, other-user ownership isolation, current-device logout and revoke suppression, continued delivery to another active device, scheduler idempotence, renewal cancellation, and owner-transfer cancellation. Physical push delivery to an iPhone and real VAPID configuration remain **NOT RUN**; no external push was sent.
+
 ## P1 — sessions, idle lock, logout, and device revocation
 
 | Command | Exit | Result |

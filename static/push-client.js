@@ -68,7 +68,7 @@ async function policemSyncExistingPush() {
   const sub = await registration.pushManager.getSubscription();
   if (!sub) return;
   const cfg = await api('push/config');
-  if (!cfg.test_enabled) return;
+  if (!cfg.enabled) return;
   await api('push/subscribe', 'POST', sub.toJSON());
   // Policy expiry notifications are delivered by the server schedule.
 }

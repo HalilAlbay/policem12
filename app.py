@@ -453,6 +453,8 @@ def switch_installation_device(c,installation_id,user_id,new_device_id,method,cu
   c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL',(now,old_id))
   c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL',(now,old_id))
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE id=? AND user_id=?',(now,old_id,user_id))
+  if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='push_subscriptions'").fetchone():
+   c.execute('UPDATE push_subscriptions SET active=0 WHERE device_id=?',(old_id,))
   c.execute('DELETE FROM device_login_settings WHERE installation_id=?',(installation_id,))
  c.execute('INSERT OR REPLACE INTO device_sessions(token_hash,device_id) VALUES (?,?)',(current_token_hash,new_device_id))
  c.execute('INSERT INTO device_login_settings(installation_id,user_id,device_id,method,updated_at) VALUES (?,?,?,?,?)',(installation_id,user_id,new_device_id,method,now))
@@ -628,6 +630,8 @@ def logout(request:Request,response:Response,u=Depends(current)):
  with tx() as c:
   device=c.execute('SELECT device_id FROM device_sessions WHERE token_hash=?',(token_hash,)).fetchone()
   if device:
+   if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='push_subscriptions'").fetchone():
+    c.execute('UPDATE push_subscriptions SET active=0 WHERE device_id=?',(device['device_id'],))
    c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device['device_id'],))
    c.execute('DELETE FROM device_sessions WHERE device_id=?',(device['device_id'],))
    c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device['device_id'],))
@@ -823,6 +827,8 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   row=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(device_id,u['id'])).fetchone()
   if not row:raise HTTPException(404,'Cihaz bulunamadı')
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE id=? AND user_id=?',(int(time.time()),device_id,u['id']))
+  if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='push_subscriptions'").fetchone():
+   c.execute('UPDATE push_subscriptions SET active=0 WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM device_sessions WHERE device_id=?)',(device_id,))
   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device_id,))

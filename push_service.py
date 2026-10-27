@@ -10,8 +10,10 @@ import base64
 import binascii
 import os
 import sqlite3
+import hashlib
+import time
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 class SubscriptionKeys(BaseModel):
@@ -43,11 +45,20 @@ def ensure_schema(c: sqlite3.Connection):
     c.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions (
         id INTEGER PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_id TEXT REFERENCES trusted_devices(id),
         endpoint TEXT NOT NULL UNIQUE,
         p256dh TEXT NOT NULL,
         auth TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
+    columns = {row['name'] for row in c.execute('PRAGMA table_info(push_subscriptions)')}
+    if 'device_id' not in columns:
+        c.execute('ALTER TABLE push_subscriptions ADD COLUMN device_id TEXT REFERENCES trusted_devices(id)')
+    if 'active' not in columns:
+        # Legacy subscriptions have no trustworthy device/session binding.
+        c.execute('ALTER TABLE push_subscriptions ADD COLUMN active INTEGER NOT NULL DEFAULT 0')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_push_user_device_active ON push_subscriptions(user_id,device_id,active)')
 
 def vapid_diagnostic():
     """Safe, non-secret diagnostics of VAPID configuration."""
@@ -101,7 +112,10 @@ def build_router(tx, current):
         with tx() as c:
             ensure_schema(c)
             rows = [dict(row) for row in c.execute(
-                "SELECT endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=?",
+                """SELECT s.endpoint,s.p256dh,s.auth FROM push_subscriptions s
+                JOIN trusted_devices d ON d.id=s.device_id AND d.user_id=s.user_id
+                JOIN device_login_settings l ON l.device_id=d.id AND l.user_id=d.user_id
+                WHERE s.user_id=? AND s.active=1 AND d.revoked_at IS NULL""",
                 (user["id"],)).fetchall()]
         if not rows:
             raise HTTPException(409, "Önce bu cihazda bildirimleri açın")
@@ -126,22 +140,32 @@ def build_router(tx, current):
         return {"ok": True, "sent": sent}
 
     @router.post("/subscribe")
-    def subscribe(subscription: Subscription, user=Depends(current)):
+    def subscribe(subscription: Subscription, request: Request, user=Depends(current)):
         if not valid_endpoint(subscription.endpoint):
             raise HTTPException(400, "Geçersiz push adresi")
         if not os.getenv("POLICEM_VAPID_PUBLIC_KEY"):
             raise HTTPException(503, "Bildirim sistemi yapılandırılmadı")
         with tx() as c:
             ensure_schema(c)
+            token = request.headers.get('Authorization', '')[7:]
+            session_hash = hashlib.sha256(token.encode()).hexdigest()
+            binding = c.execute('''SELECT d.id FROM device_sessions ds
+                JOIN trusted_devices d ON d.id=ds.device_id
+                JOIN device_login_settings l ON l.device_id=d.id AND l.user_id=d.user_id
+                JOIN sessions s ON s.token_hash=ds.token_hash AND s.user_id=d.user_id
+                WHERE ds.token_hash=? AND d.user_id=? AND d.revoked_at IS NULL
+                AND s.expires>?''', (session_hash, user['id'], int(time.time()))).fetchone()
+            if not binding:
+                raise HTTPException(403, 'Bildirim için bu cihazda güvenli cihaz girişini etkinleştirin')
             existing = c.execute('SELECT user_id FROM push_subscriptions WHERE endpoint=?',
                                  (subscription.endpoint,)).fetchone()
             if existing and existing['user_id'] != user['id']:
                 raise HTTPException(409, 'Bu cihaz başka kullanıcıya kayıtlı; önce çıkış yapın')
-            c.execute("""INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth)
-                VALUES (?,?,?,?)
+            c.execute("""INSERT INTO push_subscriptions(user_id,device_id,endpoint,p256dh,auth,active)
+                VALUES (?,?,?,?,?,1)
                 ON CONFLICT(endpoint) DO UPDATE SET
-                p256dh=excluded.p256dh,auth=excluded.auth""",
-                (user["id"], subscription.endpoint,
+                device_id=excluded.device_id,p256dh=excluded.p256dh,auth=excluded.auth,active=1""",
+                (user["id"], binding['id'], subscription.endpoint,
                  subscription.keys.p256dh, subscription.keys.auth))
         return {"ok": True}
 
@@ -149,7 +173,7 @@ def build_router(tx, current):
     def unsubscribe(subscription: Subscription, user=Depends(current)):
         with tx() as c:
             ensure_schema(c)
-            c.execute("DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?",
+            c.execute("UPDATE push_subscriptions SET active=0 WHERE endpoint=? AND user_id=?",
                       (subscription.endpoint, user["id"]))
         return {"ok": True}
 

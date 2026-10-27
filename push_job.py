@@ -35,8 +35,11 @@ def tick(today=None):
                   WHERE p.tracking=1""").fetchall()
         due=due_notifications([dict(r) for r in rows],today)
         for notice in due:
-            subscriptions=c.execute("SELECT id FROM push_subscriptions WHERE user_id=?",
-                                    (notice['recipient_user_id'],)).fetchall()
+            subscriptions=c.execute("""SELECT s.id FROM push_subscriptions s
+                JOIN trusted_devices d ON d.id=s.device_id AND d.user_id=s.user_id
+                JOIN device_login_settings l ON l.device_id=d.id AND l.user_id=d.user_id
+                WHERE s.user_id=? AND s.active=1 AND d.revoked_at IS NULL""",
+                (notice['recipient_user_id'],)).fetchall()
             for sub in subscriptions:
                 c.execute("""INSERT OR IGNORE INTO push_deliveries
                     (policy_id,days_before,subscription_id) VALUES(?,?,?)""",
@@ -45,10 +48,13 @@ def tick(today=None):
                    s.endpoint,s.p256dh,s.auth
                    FROM push_deliveries d
                    JOIN push_subscriptions s ON s.id=d.subscription_id
+                   JOIN trusted_devices td ON td.id=s.device_id AND td.user_id=s.user_id
+                   JOIN device_login_settings ls ON ls.device_id=td.id AND ls.user_id=td.user_id
                    JOIN policies p ON p.id=d.policy_id
                    LEFT JOIN renewals r ON r.policy_id=p.id
                    WHERE d.delivered_at IS NULL AND d.attempts<5
                    AND p.tracking=1 AND s.user_id=p.owner_user_id
+                   AND s.active=1 AND td.revoked_at IS NULL
                    AND CAST(julianday(p.end_date)-julianday(?) AS INTEGER)=d.days_before
                    AND d.days_before IN (15,7,1)
                    AND COALESCE(r.status,'bekliyor') NOT IN ('policelestirildi','kaybedildi')
