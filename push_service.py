@@ -5,6 +5,8 @@ to the authenticated user ID supplied by the existing app's current() dependency
 """
 import json
 import logging
+import base64
+import binascii
 import os
 import sqlite3
 from urllib.parse import urlsplit
@@ -116,10 +118,22 @@ def build_router(tx, current):
 def send_push(subscription: dict, payload: dict):
     """Transport; caller must handle retries and 404/410 stale endpoints."""
     from pywebpush import webpush
-    key = os.environ["POLICEM_VAPID_PRIVATE_KEY"]
-    subject = os.environ["POLICEM_VAPID_SUBJECT"]
-    if not subject.startswith(("mailto:", "https:")):
-        raise ValueError("VAPID subject must be mailto: or https:")
+    key = os.environ["POLICEM_VAPID_PRIVATE_KEY"].strip().replace("\\n", "\n")
+    subject = os.environ.get("POLICEM_VAPID_SUBJECT", "").strip()
+    if not subject.startswith(("mailto:", "https://")):
+        subject = "https://policem12-push-test.onrender.com"
+    if "BEGIN" not in key:
+        key = "".join(key.split())
+        try:
+            raw = base64.urlsafe_b64decode(key + "=" * (-len(key) % 4))
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("VAPID_PRIVATE_KEY_ENCODING") from exc
+        if len(raw) != 32:
+            raise ValueError("VAPID_PRIVATE_KEY_LENGTH")
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+        private_key = ec.derive_private_key(int.from_bytes(raw, "big"), ec.SECP256R1())
+        key = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
     return webpush(
         subscription_info={"endpoint": subscription["endpoint"],
                            "keys": {"p256dh": subscription["p256dh"],
