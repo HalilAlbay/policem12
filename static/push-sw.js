@@ -1,0 +1,1 @@
+self.addEventListener('push',event=>{event.waitUntil(self.registration.showNotification('Poliçem',{body:'Yeni yenileme hatırlatmanız var.'}));});
