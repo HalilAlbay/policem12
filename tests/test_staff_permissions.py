@@ -81,3 +81,35 @@ def test_staff_cannot_manage_users(client):
     staff={"Authorization":"Bearer "+auth["token"]}
     assert http.get("/api/users/manage",headers=staff).status_code==403
     assert http.post("/api/users",headers=staff,json=payload("unauthorized","technical")).status_code==403
+
+def test_policy_requires_transfer_before_deactivation(client):
+    http,owner,manager=client
+    import app
+    created=http.post("/api/users",headers=manager,json=payload("seller","technical"))
+    assert created.status_code==200,created.text
+    uid=created.json()["id"]
+    with app.tx() as c:
+        c.execute("""INSERT INTO policies(agency_id,branch_id,owner_user_id,seller_user_id,
+          uploader_user_id,customer_name,policy_type,policy_number,premium,start_date,end_date,issued_date)
+          VALUES (1,1,?,?,?,'Test Customer','Kasko','STAFF-TEST-001',100,'2026-01-01','2026-12-31','2026-01-01')""",
+          (uid,uid,uid))
+    assert http.delete(f"/api/users/{uid}",headers=manager).status_code==409
+    people=http.get("/api/users/manage",headers=owner).json()
+    dest=next(u["id"] for u in people if u["role"]=="manager")
+    moved=http.post("/api/transfer",headers=manager,json={"from_user_id":uid,"to_user_id":dest})
+    assert moved.status_code==200,moved.text
+    assert http.delete(f"/api/users/{uid}",headers=manager).status_code==200
+    with app.tx() as c:
+        p=c.execute("SELECT owner_user_id,seller_user_id FROM policies WHERE policy_number='STAFF-TEST-001'").fetchone()
+        assert p["owner_user_id"]==dest and p["seller_user_id"]==dest
+
+def test_deactivated_staff_session_revoked(client):
+    http,owner,manager=client
+    r=http.post("/api/users",headers=manager,json=payload("leaver","assistant_technical"))
+    uid=r.json()["id"]
+    auth=http.post("/api/login",json={"username":"leaver","password":"Password12345"}).json()
+    staff={"Authorization":"Bearer "+auth["token"]}
+    assert http.get("/api/me",headers=staff).status_code==200
+    assert http.delete(f"/api/users/{uid}",headers=manager).status_code==200
+    assert http.get("/api/me",headers=staff).status_code==401
+    assert http.post("/api/login",json={"username":"leaver","password":"Password12345"}).status_code==401
