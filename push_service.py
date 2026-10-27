@@ -114,8 +114,11 @@ def build_router(tx, current):
             except Exception as exc:
                 # Log only the exception type, never VAPID secrets or subscription endpoints.
                 failure_types.append(type(exc).__name__)
+                frames = traceback.extract_tb(exc.__traceback__)
+                origin = [(os.path.basename(frame.filename), frame.name, frame.lineno)
+                          for frame in frames[-4:]]
                 logging.getLogger("uvicorn.error").error(
-                    "Push test failed: type=%s", type(exc).__name__)
+                    "Push test failed: type=%s origin=%s", type(exc).__name__, origin)
         if not sent:
             raise HTTPException(502, "Test bildirimi gönderilemedi (" +
                                 ", ".join(sorted(set(failure_types))) + ")")
