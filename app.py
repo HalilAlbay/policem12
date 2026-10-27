@@ -477,3 +477,7 @@ def reminders(u=Depends(current)):
 # Additive customer experience; existing agency endpoints and database tables remain unchanged.
 from customer_portal import register as register_customer_portal
 register_customer_portal(app,conn,tx,password_hash,check_pw,DATA,ROOT)
+
+# Optional Web Push API. Existing policy and login endpoints are unchanged.
+from push_service import build_router
+app.include_router(build_router(tx,current))
