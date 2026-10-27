@@ -51,7 +51,31 @@ def build_router(tx, current):
     @router.get("/config")
     def config(user=Depends(current)):
         public_key = os.getenv("POLICEM_VAPID_PUBLIC_KEY", "")
-        return {"enabled": bool(public_key), "public_key": public_key}
+        return {"enabled": bool(public_key), "public_key": public_key, "test_enabled": os.getenv("RENDER_SERVICE_NAME") == "policem12-push-test"}
+
+    @router.post("/test")
+    def test_notification(user=Depends(current)):
+        # Never expose this endpoint on the production service.
+        if os.getenv("RENDER_SERVICE_NAME") != "policem12-push-test":
+            raise HTTPException(404, "Bulunamadı")
+        with tx() as c:
+            ensure_schema(c)
+            rows = [dict(row) for row in c.execute(
+                "SELECT endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=?",
+                (user["id"],)).fetchall()]
+        if not rows:
+            raise HTTPException(409, "Önce bu cihazda bildirimleri açın")
+        sent = 0
+        for sub in rows:
+            try:
+                send_push(sub, {"notification_id": "test-" + str(user["id"]),
+                                "message": "Poliçem TEST bildirimi"})
+                sent += 1
+            except Exception:
+                pass
+        if not sent:
+            raise HTTPException(502, "Test bildirimi gönderilemedi")
+        return {"ok": True, "sent": sent}
 
     @router.post("/subscribe")
     def subscribe(subscription: Subscription, user=Depends(current)):
