@@ -69,6 +69,12 @@ class PushIntegrationTests(unittest.TestCase):
             row=c.execute("SELECT user_id FROM push_subscriptions").fetchone()
         self.assertEqual(row[0],self.user1)
 
+    def test_other_user_cannot_claim_existing_device(self):
+        self.assertEqual(self.subscribe().status_code,200)
+        self.assertEqual(self.subscribe(user=2).status_code,409)
+        with app.tx() as c:
+            self.assertEqual(c.execute('SELECT user_id FROM push_subscriptions').fetchone()[0],self.user1)
+
     def test_unsubscribe_other_user_does_not_delete(self):
         self.subscribe()
         self.assertEqual(self.request("POST","/api/push/unsubscribe",2,
