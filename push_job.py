@@ -21,7 +21,7 @@ def ensure_delivery_schema(c):
     )""")
 
 def tick(today=None):
-    today = today or date.today()
+    today = today or __import__('datetime').datetime.now(ZoneInfo('Europe/Istanbul')).date()
     if not all(os.getenv(k) for k in ('POLICEM_VAPID_PUBLIC_KEY',
                                       'POLICEM_VAPID_PRIVATE_KEY',
                                       'POLICEM_VAPID_SUBJECT')):
@@ -49,8 +49,10 @@ def tick(today=None):
                    LEFT JOIN renewals r ON r.policy_id=p.id
                    WHERE d.delivered_at IS NULL AND d.attempts<5
                    AND p.tracking=1 AND s.user_id=p.owner_user_id
+                   AND CAST(julianday(p.end_date)-julianday(?) AS INTEGER)=d.days_before
+                   AND d.days_before IN (15,7,1)
                    AND COALESCE(r.status,'bekliyor') NOT IN ('policelestirildi','kaybedildi')
-                   ORDER BY d.attempts,d.policy_id LIMIT 100""").fetchall()
+                   ORDER BY d.attempts,d.policy_id LIMIT 100""", (today.isoformat(),)).fetchall()
     sent=0; failed=0
     for item in pending:
         d=dict(item)
