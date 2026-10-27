@@ -84,4 +84,4 @@ async function loadAudit(){await safe(async()=>{let a=await api('audit');$('audi
 async function changePassword(){await safe(async()=>{await api('password','POST',{old:$('oldPw').value,new:$('newPw').value});lockSession('logout');$('loginStatus').textContent='Şifre değiştirildi. Yeni şifrenizle tekrar giriş yapın.'})}
 async function saveTheme(){await safe(async()=>{await api('theme','POST',{theme:$('theme').value});document.documentElement.style.setProperty('--brand',$('theme').value);msg('Renk kaydedildi')})}
 setupPasskeyUI();refreshBranding().catch(()=>{});if(token)boot();else checkFirstSetup().then(()=>{setupPasskeyUI();const username=localStorage.getItem('policem_last_username');if(username)$('username').value=username});
-</script><script src="/static/push-client.js" defer></script></body></html>
+</script><script src="/static/pin-client.js" defer></script><script src="/static/push-client.js" defer></script></body></html>

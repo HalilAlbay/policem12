@@ -71,6 +71,21 @@ P2 test plan: valid generated registration and assertion vectors; wrong challeng
 - P2 verification: `tests/test_webauthn.py` includes a generated valid P-256/ES256 registration and signed discoverable assertion through the real server verifier, config fail-closed, required UV/resident/platform options, step-up, no account selector, and consumed-invalid-challenge checks. Focused WebAuthn/session/device/legacy suite: 18 passed, 0 failed.
 - Not yet proved on a real iPhone: browser/Safari passkey UX, device passcode prompt, or deployment-origin/RP configuration. Those require final environment configuration and the requested physical acceptance test; no security success is inferred from TestClient vectors alone.
 
+## P3 PIN device-proof contract (before implementation)
+
+PIN mode uses a per-installation P-256 WebCrypto signing key, generated non-extractable in the browser and persisted as a CryptoKey in IndexedDB. The public JWK is registered with a server-generated, one-use challenge after account-password step-up and two matching four-digit PIN entries. The server stores only a salted password-style PIN hash and the public key. Every PIN unlock signs a fresh server challenge and submits the PIN; the server checks device proof first and only then checks the PIN. Five bad PINs permanently lock that device's PIN grant until password-based recovery/re-enrollment. PIN mode never invokes WebAuthn or Face ID. If Safari cannot retain or use the CryptoKey, PIN unlock fails closed and password login remains available.
+
+| Method / path | Auth and request | Response / effects |
+|---|---|---|
+| `POST /api/security/pin/enroll/options` | Bearer + `{label,password}` step-up. | One-time 5-minute challenge bound to account/session; no device is inserted. |
+| `POST /api/security/pin/enroll/verify` | Same bearer + `{ceremony_id,public_key,pin,pin_confirm,signature}`. | Requires valid signature, matching 4-digit PINs, active session, and device cap; atomically creates trusted device, proof key, PIN hash. |
+| `POST /api/security/pin/login/options` | Public `{device_id}`; device ID is only a selector. | One-time 5-minute challenge for active, PIN-enabled device; unknown/revoked/locked cases stay generic. |
+| `POST /api/security/pin/login/verify` | Public `{device_id,ceremony_id,pin,signature}`. | Requires device signature and PIN; 5 bad PINs lock the grant; success creates device-bound session. |
+
+The signature covers a versioned purpose string, challenge ID, challenge bytes, and device ID to prevent cross-purpose/device replay. Challenge consumption precedes proof/PIN checks. Cryptographic key operations do not require Face ID; the PIN grant is not coupled to WebAuthn. A non-extractable browser CryptoKey provides origin/profile possession proof, not hardware-backed proof; if the target Safari PWA fails the persistence or key-use acceptance test, PIN remains unavailable on that client and password fallback is preserved.
+
+P3 implementation result: `pin_device_keys` stores only a public JWK; `device_pin.pin_hash` uses scrypt (N=32768,r=8,p=1, 16-byte random salt). Failed signature proof does not consume PIN attempts. Five correctly device-signed wrong PINs set persistent `locked_at`; the lock is per device, and password entry remains available. A successful PIN login creates a 24-hour access session bound to the device. Device/account revoke and password-change paths invalidate the PIN grant. Test coverage exercises matching enrollment, signature rejection without attempt increase, all five failures and lock persistence, successful PIN login, and server-side revoke.
+
 ## P1 implementation result
 
 - `sessions.last_activity`, `auth_attempts`, and the version marker are additive/idempotent. First security-schema initialization revokes the unsafe prototype trusted-device state, removes bound access/refresh/PIN proof rows, preserves unbound password sessions and business data, and emits a secret-free audit event.

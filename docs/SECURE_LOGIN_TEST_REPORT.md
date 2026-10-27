@@ -61,6 +61,17 @@ For each later stage, record the exact command and exit code, pass/fail/skip cou
 
 Test warnings: FastAPI `on_event` and Starlette TestClient/httpx deprecations; no P2 test failure. Physical iPhone/iOS Safari acceptance and production origin/RP configuration are **NOT RUN** (require the user’s real iPhone and target origin). The feature rejects missing/mismatched server configuration with 503.
 
+## P3 — independent PIN plus browser-held device proof
+
+| Command | Exit | Result |
+|---|---:|---|
+| `.venv\\Scripts\\python.exe -m pytest -q tests/test_webauthn.py tests/test_auth_session.py tests/test_device_sessions.py tests/test_quick_login.py` | 0 | **20 passed, 0 failed, 0 skipped** |
+| `node --check static/pin-client.js` | 0 | **PASSED** |
+| `.venv\\Scripts\\python.exe -m py_compile app.py` | 0 | **PASSED** |
+| `git diff --check` | 0 | **PASSED** |
+
+PIN tests prove enrollment is signed by the registered P-256 key, wrong signatures do not consume PIN guesses, five device-signed incorrect PINs lock the persisted grant, correct PIN issues a device-bound session, and revoke invalidates that session. PIN uses a WebCrypto non-extractable key in IndexedDB and never calls WebAuthn/Face ID. iOS Safari/PWA CryptoKey persistence still requires the user’s device acceptance test; if unavailable, PIN falls back to account password and must not be described as enabled on that install.
+
 ## P1 — sessions, idle lock, logout, and device revocation
 
 | Command | Exit | Result |

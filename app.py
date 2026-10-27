@@ -1,5 +1,5 @@
 """Policem server: SQLite-backed operations. Run: uvicorn app:app --host 0.0.0.0 --port 8000"""
-import os, sqlite3, secrets, hashlib, hmac, json, re, time, threading, smtplib, sys
+import os, sqlite3, secrets, hashlib, hmac, json, re, time, threading, smtplib, sys, base64
 from datetime import datetime, date, timedelta
 from email.message import EmailMessage
 from pathlib import Path
@@ -15,6 +15,9 @@ from webauthn import (generate_registration_options, verify_registration_respons
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import (AuthenticatorSelectionCriteria, AuthenticatorAttachment,
  ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor)
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 ROOT=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 STORAGE_ROOT=Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else ROOT
@@ -82,8 +85,18 @@ def init():
    user_id INTEGER REFERENCES users(id),session_hash TEXT,challenge BLOB NOT NULL,
    label TEXT,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,consumed_at INTEGER)''')
   c.execute('CREATE INDEX IF NOT EXISTS idx_webauthn_challenge_expiry ON webauthn_challenges(expires_at,consumed_at)')
-  c.execute('UPDATE auth_schema_meta SET version=2 WHERE id=1 AND version<2')
+  c.execute('''CREATE TABLE IF NOT EXISTS pin_device_keys(
+   device_id TEXT PRIMARY KEY REFERENCES trusted_devices(id),user_id INTEGER NOT NULL REFERENCES users(id),
+   public_key TEXT NOT NULL,created_at INTEGER NOT NULL,revoked_at INTEGER)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_pin_keys_user ON pin_device_keys(user_id,revoked_at)')
+  c.execute('''CREATE TABLE IF NOT EXISTS pin_challenges(
+   id TEXT PRIMARY KEY,purpose TEXT NOT NULL CHECK(purpose IN ('enroll','login')),
+   device_id TEXT NOT NULL,user_id INTEGER,session_hash TEXT,challenge BLOB NOT NULL,label TEXT,
+   created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,consumed_at INTEGER)''')
+  c.execute('CREATE INDEX IF NOT EXISTS idx_pin_challenge_expiry ON pin_challenges(expires_at,consumed_at)')
+  c.execute('UPDATE auth_schema_meta SET version=3 WHERE id=1 AND version<3')
   c.execute('DELETE FROM webauthn_challenges WHERE expires_at<? OR consumed_at IS NOT NULL',(int(time.time())-86400,))
+  c.execute('DELETE FROM pin_challenges WHERE expires_at<? OR consumed_at IS NOT NULL',(int(time.time())-86400,))
   c.execute('''CREATE TABLE IF NOT EXISTS auth_attempts(
     scope_hash TEXT PRIMARY KEY,attempts INTEGER NOT NULL CHECK(attempts>=0),
     window_started INTEGER NOT NULL,updated_at INTEGER NOT NULL)''')
@@ -120,6 +133,19 @@ def check_pw(pw,stored):
   salt,expected=stored.split(':');actual=hashlib.pbkdf2_hmac('sha256',pw.encode(),bytes.fromhex(salt),350000)
   return hmac.compare_digest(actual,bytes.fromhex(expected))
  except: return False
+
+def pin_hash(pin):
+ salt=secrets.token_bytes(16);derived=hashlib.scrypt(pin.encode('ascii'),salt=salt,n=2**15,r=8,p=1,dklen=32,maxmem=64*1024*1024)
+ return 'scrypt$32768$8$1$'+base64.urlsafe_b64encode(salt).decode().rstrip('=')+'$'+base64.urlsafe_b64encode(derived).decode().rstrip('=')
+
+def check_pin_hash(pin,stored):
+ try:
+  kind,n,r,p,salt_text,expected_text=stored.split('$')
+  if kind!='scrypt' or (int(n),int(r),int(p))!=(32768,8,1) or not re.fullmatch(r'\d{4}',pin):return False
+  salt=base64.urlsafe_b64decode(salt_text+'='*((4-len(salt_text)%4)%4));expected=base64.urlsafe_b64decode(expected_text+'='*((4-len(expected_text)%4)%4))
+  actual=hashlib.scrypt(pin.encode('ascii'),salt=salt,n=32768,r=8,p=1,dklen=32,maxmem=64*1024*1024)
+  return hmac.compare_digest(actual,expected)
+ except Exception:return False
 
 DUMMY_PASSWORD_HASH=password_hash('constant-time-login-placeholder')
 
@@ -191,6 +217,10 @@ class DeviceRevoke(BaseModel):password:str
 class WebAuthnRegisterOptions(BaseModel):label:str=Field(min_length=1,max_length=80);password:str=Field(min_length=1,max_length=256)
 class WebAuthnRegisterVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);credential:dict
 class WebAuthnLoginVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);credential:dict
+class PinEnrollOptions(BaseModel):label:str=Field(min_length=1,max_length=80);password:str=Field(min_length=1,max_length=256)
+class PinEnrollVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);device_id:str=Field(min_length=20,max_length=64);public_key:dict;pin:str=Field(min_length=4,max_length=4);pin_confirm:str=Field(min_length=4,max_length=4);signature:str=Field(min_length=80,max_length=128)
+class PinLoginOptions(BaseModel):device_id:str=Field(min_length=20,max_length=64)
+class PinLoginVerify(BaseModel):ceremony_id:str=Field(min_length=20,max_length=64);device_id:str=Field(min_length=20,max_length=64);pin:str=Field(min_length=4,max_length=4);signature:str=Field(min_length=80,max_length=128)
 def current(request:Request):
  auth=request.headers.get('Authorization','')
  if not auth.startswith('Bearer '): raise HTTPException(401,'Oturum açın')
@@ -340,6 +370,106 @@ def webauthn_login_verify(data:WebAuthnLoginVerify,request:Request):
   audit(c,row['user_id'],'webauthn_login','trusted_device',None,{'device_id':row['device_id']})
  user={'id':row['user_id'],'username':row['username'],'display_name':row['display_name'],'role':row['role'],'branch_id':row['branch_id'],'theme':row['theme'],'email':row['email'],'phone':row['phone'],'start_date':row['start_date'],'job_title':row['job_title'],'active':row['active']}
  return {'token':token,'user':user,'idle_expires_at':now+IDLE_SECONDS}
+
+def pin_signing_message(purpose,ceremony_id,device_id,challenge):
+ return b'policem-pin-v1\0'+purpose.encode('ascii')+b'\0'+ceremony_id.encode('ascii')+b'\0'+device_id.encode('ascii')+b'\0'+bytes(challenge)
+
+def verify_pin_signature(public_key,signature,message):
+ try:
+  if len(json.dumps(public_key,separators=(',',':'))) > 2048:raise ValueError()
+  if public_key.get('kty')!='EC' or public_key.get('crv')!='P-256' or set(public_key)!={'kty','crv','x','y','ext','key_ops'}:raise ValueError()
+  x=int.from_bytes(base64url_to_bytes(public_key['x']),'big');y=int.from_bytes(base64url_to_bytes(public_key['y']),'big')
+  if len(base64url_to_bytes(public_key['x']))!=32 or len(base64url_to_bytes(public_key['y']))!=32:raise ValueError()
+  key=ec.EllipticCurvePublicNumbers(x,y,ec.SECP256R1()).public_key()
+  sig=base64url_to_bytes(signature)
+  if len(sig)!=64:raise ValueError()
+  key.verify(encode_dss_signature(int.from_bytes(sig[:32],'big'),int.from_bytes(sig[32:],'big')),message,ec.ECDSA(hashes.SHA256()))
+  return key
+ except Exception:return None
+
+def consume_pin_challenge(c,ceremony_id,purpose,device_id,user_id=None,session_hash=None):
+ now=int(time.time())
+ row=c.execute('''SELECT * FROM pin_challenges WHERE id=? AND purpose=? AND device_id=? AND expires_at>? AND consumed_at IS NULL
+   AND ((user_id IS NULL AND ? IS NULL) OR user_id=?) AND ((session_hash IS NULL AND ? IS NULL) OR session_hash=?)''',
+   (ceremony_id,purpose,device_id,now,user_id,user_id,session_hash,session_hash)).fetchone()
+ if not row:return None
+ changed=c.execute('UPDATE pin_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL AND expires_at>?',(now,ceremony_id,now)).rowcount
+ return dict(row) if changed==1 else None
+
+@app.post('/api/security/pin/enroll/options')
+def pin_enroll_options(data:PinEnrollOptions,request:Request,u=Depends(current)):
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,detail={'code':'STEP_UP_REQUIRED'})
+ label=data.label.strip()
+ if not label:raise HTTPException(422,'Cihaz adı gerekli')
+ now=int(time.time());device_id=secrets.token_urlsafe(24);ceremony_id=secrets.token_urlsafe(24);challenge=secrets.token_bytes(32)
+ session_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest()
+ with tx() as c:
+  if c.execute('SELECT COUNT(*) FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL',(u['id'],)).fetchone()[0]>=10:raise HTTPException(409,detail={'code':'DEVICE_LIMIT'})
+  c.execute("INSERT INTO pin_challenges(id,purpose,device_id,user_id,session_hash,challenge,label,created_at,expires_at) VALUES (?,'enroll',?,?,?,?,?,?,?)",
+   (ceremony_id,device_id,u['id'],session_hash,challenge,label,now,now+300))
+ return {'ceremony_id':ceremony_id,'device_id':device_id,'challenge':bytes_to_base64url(challenge),'expires_at':now+300}
+
+@app.post('/api/security/pin/enroll/verify')
+def pin_enroll_verify(data:PinEnrollVerify,request:Request,u=Depends(current)):
+ session_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest();now=int(time.time())
+ with tx() as c:challenge=consume_pin_challenge(c,data.ceremony_id,'enroll',data.device_id,u['id'],session_hash)
+ if not challenge:raise HTTPException(400,detail={'code':'INVALID_CEREMONY'})
+ if not re.fullmatch(r'\d{4}',data.pin) or not hmac.compare_digest(data.pin,data.pin_confirm):raise HTTPException(422,detail={'code':'PIN_INVALID'})
+ message=pin_signing_message('enroll',data.ceremony_id,data.device_id,challenge['challenge'])
+ if not verify_pin_signature(data.public_key,data.signature,message):raise HTTPException(400,detail={'code':'INVALID_CEREMONY'})
+ now=int(time.time())
+ with tx() as c:
+  if c.execute('SELECT COUNT(*) FROM trusted_devices WHERE user_id=? AND revoked_at IS NULL',(u['id'],)).fetchone()[0]>=10:raise HTTPException(409,detail={'code':'DEVICE_LIMIT'})
+  try:
+   c.execute('INSERT INTO trusted_devices(id,user_id,label,created_at,last_seen) VALUES (?,?,?,?,?)',(data.device_id,u['id'],challenge['label'],now,now))
+   c.execute('INSERT INTO pin_device_keys(device_id,user_id,public_key,created_at) VALUES (?,?,?,?)',(data.device_id,u['id'],json.dumps(data.public_key,separators=(',',':')),now))
+   c.execute('INSERT INTO device_pin(device_id,pin_hash,failures,locked_at) VALUES (?,?,0,NULL)',(data.device_id,pin_hash(data.pin)))
+  except sqlite3.IntegrityError:raise HTTPException(409,detail={'code':'DEVICE_EXISTS'})
+  audit(c,u['id'],'pin_enroll','trusted_device',None,{'device_id':data.device_id})
+ return {'ok':True,'device':{'id':data.device_id,'label':challenge['label'],'method':'pin'}}
+
+@app.post('/api/security/pin/login/options')
+def pin_login_options(data:PinLoginOptions,request:Request):
+ check_webauthn_rate(request);now=int(time.time());ceremony_id=secrets.token_urlsafe(24);challenge=secrets.token_bytes(32)
+ with tx() as c:
+  c.execute("INSERT INTO pin_challenges(id,purpose,device_id,challenge,created_at,expires_at) VALUES (?,'login',?,?,?,?)",
+   (ceremony_id,data.device_id,challenge,now,now+300))
+ return {'ceremony_id':ceremony_id,'challenge':bytes_to_base64url(challenge),'expires_at':now+300}
+
+@app.post('/api/security/pin/login/verify')
+def pin_login_verify(data:PinLoginVerify):
+ now=int(time.time())
+ with tx() as c:
+  challenge=consume_pin_challenge(c,data.ceremony_id,'login',data.device_id)
+  if not challenge:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+  row=c.execute('''SELECT k.user_id,k.public_key,d.label,d.revoked_at,p.pin_hash,p.failures,p.locked_at,u.username,u.active,u.display_name,u.role,u.branch_id,u.theme,u.email,u.phone,u.start_date,u.job_title
+   FROM pin_device_keys k JOIN trusted_devices d ON d.id=k.device_id JOIN device_pin p ON p.device_id=k.device_id
+   JOIN users u ON u.id=k.user_id WHERE k.device_id=? AND k.user_id=d.user_id AND p.device_id=d.id''',(data.device_id,)).fetchone()
+ if not row or row['revoked_at'] is not None or not row['active'] or row['locked_at'] is not None:
+  raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+ message=pin_signing_message('login',data.ceremony_id,data.device_id,challenge['challenge'])
+ try:key_json=json.loads(row['public_key'])
+ except Exception:key_json={}
+ if not verify_pin_signature(key_json,data.signature,message):raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+ if not re.fullmatch(r'\d{4}',data.pin) or not check_pin_hash(data.pin,row['pin_hash']):
+  with tx() as c:
+   current_row=c.execute('SELECT failures,locked_at FROM device_pin WHERE device_id=?',(data.device_id,)).fetchone()
+   if current_row and current_row['locked_at'] is None:
+    failures=int(current_row['failures'])+1;locked=now if failures>=5 else None
+    c.execute('UPDATE device_pin SET failures=?,locked_at=? WHERE device_id=?',(failures,locked,data.device_id))
+    audit(c,row['user_id'],'pin_failure','trusted_device',None,{'device_id':data.device_id,'failures':failures})
+  raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+ token=secrets.token_urlsafe(40);token_hash=hashlib.sha256(token.encode()).hexdigest()
+ with tx() as c:
+  active=c.execute('SELECT 1 FROM users u JOIN trusted_devices d ON d.user_id=u.id JOIN pin_device_keys k ON k.device_id=d.id JOIN device_pin p ON p.device_id=d.id WHERE u.id=? AND u.active=1 AND d.id=? AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND p.locked_at IS NULL',(row['user_id'],data.device_id)).fetchone()
+  if not active:raise HTTPException(401,detail={'code':'AUTH_FAILED'})
+  c.execute('UPDATE device_pin SET failures=0 WHERE device_id=?',(data.device_id,))
+  c.execute('INSERT INTO sessions(token_hash,user_id,expires,last_activity) VALUES (?,?,?,?)',(token_hash,row['user_id'],now+86400,now))
+  c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?)',(token_hash,data.device_id))
+  c.execute('UPDATE trusted_devices SET last_seen=? WHERE id=?',(now,data.device_id))
+  audit(c,row['user_id'],'pin_login','trusted_device',None,{'device_id':data.device_id})
+ user={k:row[k] for k in ('username','display_name','role','branch_id','theme','email','phone','start_date','job_title','active')};user['id']=row['user_id']
+ return {'token':token,'user':user,'idle_expires_at':now+IDLE_SECONDS}
 class RefreshEnroll(BaseModel):device_id:str;password:str
 class PinEnroll(BaseModel):device_id:str;password:str;pin:str
 class PinRefresh(BaseModel):pin:str
@@ -424,6 +554,7 @@ def change_password(data:PasswordChange,u=Depends(current)):
   c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(u['id'],))
   c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(u['id'],))
   c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
+  c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
   c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),u['id']))
   audit(c,u['id'],'password_change','user',u['id'])
  return {'ok':True,'message':'Şifre değiştirildi; yeniden giriş yapın'}
@@ -431,7 +562,7 @@ def change_password(data:PasswordChange,u=Depends(current)):
 @app.get('/api/security/devices')
 def list_trusted_devices(u=Depends(current)):
  with tx() as c:
-  rows=c.execute("SELECT d.id,d.label,d.created_at,d.last_seen,CASE WHEN EXISTS(SELECT 1 FROM webauthn_credentials w WHERE w.device_id=d.id AND w.revoked_at IS NULL) THEN 'webauthn' ELSE 'unverified' END AS method FROM trusted_devices d WHERE d.user_id=? AND d.revoked_at IS NULL ORDER BY d.created_at DESC",(u['id'],)).fetchall()
+  rows=c.execute("SELECT d.id,d.label,d.created_at,d.last_seen,CASE WHEN EXISTS(SELECT 1 FROM webauthn_credentials w WHERE w.device_id=d.id AND w.revoked_at IS NULL) THEN 'webauthn' WHEN EXISTS(SELECT 1 FROM pin_device_keys p WHERE p.device_id=d.id AND p.revoked_at IS NULL) THEN 'pin' ELSE 'unverified' END AS method FROM trusted_devices d WHERE d.user_id=? AND d.revoked_at IS NULL ORDER BY d.created_at DESC",(u['id'],)).fetchall()
  return {'devices':[dict(row) for row in rows]}
 
 @app.post('/api/security/devices')
@@ -492,6 +623,7 @@ def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
   c.execute('DELETE FROM device_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM refresh_sessions WHERE device_id=?',(device_id,))
   c.execute('DELETE FROM device_pin WHERE device_id=?',(device_id,))
+  c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL',(int(time.time()),device_id))
   c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL',(int(time.time()),device_id))
   audit(c,u['id'],'revoke','trusted_device',0,{'device_id':device_id})
  return {'ok':True,'note':'Cihaz ve bağlı oturumları iptal edildi; bağlanmamış eski oturumlar etkilenmez'}
@@ -619,6 +751,7 @@ def edit_user(user_id:int,data:UserEdit,u=Depends(require('partner','manager')))
    c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(user_id,))
    c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(user_id,))
    c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
+   c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
    c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),user_id))
   audit(c,u['id'],'update','user',user_id,{'from_title':old['job_title'],'to_title':data.job_title,'active':data.active})
  return {'ok':True}
@@ -653,6 +786,7 @@ def deactivate(kind:str,item_id:int,u=Depends(require('partner','manager'))):
    c.execute('DELETE FROM refresh_sessions WHERE user_id=?',(item_id,))
    c.execute('DELETE FROM device_pin WHERE device_id IN (SELECT id FROM trusted_devices WHERE user_id=?)',(item_id,))
    c.execute('UPDATE webauthn_credentials SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
+   c.execute('UPDATE pin_device_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
    c.execute('UPDATE trusted_devices SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',(int(time.time()),item_id))
   c.execute(f'UPDATE {kind} SET active=0 WHERE id=?',(item_id,));audit(c,u['id'],'deactivate',kind,item_id)
  return {'ok':True}

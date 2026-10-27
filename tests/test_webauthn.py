@@ -10,6 +10,7 @@ import pytest
 import cbor2
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 
 @pytest.fixture
@@ -147,4 +148,83 @@ def test_generated_platform_credential_registers_and_authenticates(webauthn_clie
     assert authenticated.status_code == 200, authenticated.text
     assert authenticated.json()["user"]["username"] == "owner"
     assert webauthn_client.get("/api/me", headers={"Authorization": "Bearer " + authenticated.json()["token"]}).status_code == 200
+
+
+def pin_key_material():
+    private = ec.generate_private_key(ec.SECP256R1())
+    n = private.public_key().public_numbers()
+    public = {"kty": "EC", "crv": "P-256", "x": b64url(n.x.to_bytes(32, "big")),
+              "y": b64url(n.y.to_bytes(32, "big")), "ext": True, "key_ops": ["verify"]}
+    return private, public
+
+
+def pin_signature(private, purpose, ceremony_id, device_id, challenge):
+    message = (b"policem-pin-v1\0" + purpose.encode() + b"\0" + ceremony_id.encode() + b"\0"
+               + device_id.encode() + b"\0" + app_base64url_decode(challenge))
+    der = private.sign(message, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(der)
+    return b64url(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+
+
+def app_base64url_decode(value):
+    return base64.urlsafe_b64decode(value + "=" * ((4 - len(value) % 4) % 4))
+
+
+def enroll_pin(http, headers, private, public, pin="2468"):
+    options = http.post("/api/security/pin/enroll/options", headers=headers,
+                        json={"label": "PIN test device", "password": "Password12345"})
+    assert options.status_code == 200, options.text
+    begin = options.json()
+    signature = pin_signature(private, "enroll", begin["ceremony_id"], begin["device_id"], begin["challenge"])
+    result = http.post("/api/security/pin/enroll/verify", headers=headers, json={
+        "ceremony_id": begin["ceremony_id"], "device_id": begin["device_id"],
+        "public_key": public, "pin": pin, "pin_confirm": pin, "signature": signature})
+    assert result.status_code == 200, result.text
+    return begin["device_id"]
+
+
+def test_pin_requires_device_signature_and_locks_after_five_wrong_pins(webauthn_client):
+    import app
+    private, public = pin_key_material()
+    owner_headers = login(webauthn_client)
+    device_id = enroll_pin(webauthn_client, owner_headers, private, public)
+    wrong_key, _ = pin_key_material()
+    first = webauthn_client.post("/api/security/pin/login/options", json={"device_id": device_id}).json()
+    bad_proof = pin_signature(wrong_key, "login", first["ceremony_id"], device_id, first["challenge"])
+    denied = webauthn_client.post("/api/security/pin/login/verify", json={
+        "device_id": device_id, "ceremony_id": first["ceremony_id"], "pin": "2468", "signature": bad_proof})
+    assert denied.status_code == 401
+    with app.tx() as c:
+        assert c.execute("SELECT failures FROM device_pin WHERE device_id=?", (device_id,)).fetchone()[0] == 0
+
+    for _ in range(5):
+        challenge = webauthn_client.post("/api/security/pin/login/options", json={"device_id": device_id}).json()
+        signature = pin_signature(private, "login", challenge["ceremony_id"], device_id, challenge["challenge"])
+        denied = webauthn_client.post("/api/security/pin/login/verify", json={
+            "device_id": device_id, "ceremony_id": challenge["ceremony_id"], "pin": "1111", "signature": signature})
+        assert denied.status_code == 401
+    with app.tx() as c:
+        pin_row = c.execute("SELECT failures,locked_at FROM device_pin WHERE device_id=?", (device_id,)).fetchone()
+        assert pin_row["failures"] == 5 and pin_row["locked_at"] is not None
+    challenge = webauthn_client.post("/api/security/pin/login/options", json={"device_id": device_id}).json()
+    signature = pin_signature(private, "login", challenge["ceremony_id"], device_id, challenge["challenge"])
+    denied = webauthn_client.post("/api/security/pin/login/verify", json={
+        "device_id": device_id, "ceremony_id": challenge["ceremony_id"], "pin": "2468", "signature": signature})
+    assert denied.status_code == 401
+
+
+def test_pin_success_creates_device_bound_session(webauthn_client):
+    private, public = pin_key_material()
+    device_id = enroll_pin(webauthn_client, login(webauthn_client), private, public)
+    challenge = webauthn_client.post("/api/security/pin/login/options", json={"device_id": device_id}).json()
+    signature = pin_signature(private, "login", challenge["ceremony_id"], device_id, challenge["challenge"])
+    response = webauthn_client.post("/api/security/pin/login/verify", json={
+        "device_id": device_id, "ceremony_id": challenge["ceremony_id"], "pin": "2468", "signature": signature})
+    assert response.status_code == 200, response.text
+    bearer = {"Authorization": "Bearer " + response.json()["token"]}
+    assert webauthn_client.get("/api/me", headers=bearer).status_code == 200
+    owner_headers = login(webauthn_client)
+    assert webauthn_client.post(f"/api/security/devices/{device_id}/revoke", headers=owner_headers,
+                                json={"password": "Password12345"}).status_code == 200
+    assert webauthn_client.get("/api/me", headers=bearer).status_code == 401
 
