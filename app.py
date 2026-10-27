@@ -264,6 +264,11 @@ def check_job_permission(actor,title):
  if title not in JOB_ROLES:raise HTTPException(400,'Unvan geçersiz')
  if actor['role']=='manager' and title not in ('technical','assistant_technical'):raise HTTPException(403,'Bu unvanı yönetme yetkiniz yok')
 
+@app.get('/api/users/manage')
+def manage_users(u=Depends(require('partner','manager'))):
+ with tx() as c:
+  return [public_user(dict(x)) for x in c.execute('SELECT * FROM users ORDER BY active DESC,display_name')]
+
 @app.post('/api/users')
 def add_user(data:NewUser,u=Depends(require('partner','manager'))):
  title=data.job_title or {'partner':'agency_authority','manager':'agency_manager','staff':'technical'}.get(data.role)
