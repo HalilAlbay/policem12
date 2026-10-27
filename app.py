@@ -206,6 +206,18 @@ def register_trusted_device(data:DeviceRegister,u=Depends(current)):
   audit(c,u['id'],'register','trusted_device',0,{'device_id':device_id})
  return {'id':device_id,'label':label,'created_at':now,'note':'Cihaz kaydı yapıldı; hızlı giriş henüz etkin değil'}
 
+@app.post('/api/security/devices/{device_id}/bind')
+def bind_device_session(device_id:str,data:DeviceRevoke,request:Request,u=Depends(current)):
+ if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
+ token_hash=hashlib.sha256(request.headers['Authorization'][7:].encode()).hexdigest()
+ with tx() as c:
+  device=c.execute('SELECT id FROM trusted_devices WHERE id=? AND user_id=? AND revoked_at IS NULL',(device_id,u['id'])).fetchone()
+  if not device:raise HTTPException(404,'Cihaz bulunamadı')
+  c.execute('INSERT INTO device_sessions(token_hash,device_id) VALUES (?,?) ON CONFLICT(token_hash) DO UPDATE SET device_id=excluded.device_id',(token_hash,device_id))
+  c.execute('UPDATE trusted_devices SET last_seen=? WHERE id=?',(int(time.time()),device_id))
+  audit(c,u['id'],'bind','trusted_device',0,{'device_id':device_id})
+ return {'ok':True}
+
 @app.post('/api/security/devices/{device_id}/revoke')
 def revoke_trusted_device(device_id:str,data:DeviceRevoke,u=Depends(current)):
  if not check_pw(data.password,u['password_hash']):raise HTTPException(403,'Şifre doğrulanamadı')
