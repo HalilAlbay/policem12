@@ -61,11 +61,14 @@ def build_router(tx, current):
             raise HTTPException(503, "Bildirim sistemi yapılandırılmadı")
         with tx() as c:
             ensure_schema(c)
-            # Transfer existing device endpoint only after current user auth.
+            existing = c.execute('SELECT user_id FROM push_subscriptions WHERE endpoint=?',
+                                 (subscription.endpoint,)).fetchone()
+            if existing and existing['user_id'] != user['id']:
+                raise HTTPException(409, 'Bu cihaz başka kullanıcıya kayıtlı; önce çıkış yapın')
             c.execute("""INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth)
                 VALUES (?,?,?,?)
                 ON CONFLICT(endpoint) DO UPDATE SET
-                user_id=excluded.user_id,p256dh=excluded.p256dh,auth=excluded.auth""",
+                p256dh=excluded.p256dh,auth=excluded.auth""",
                 (user["id"], subscription.endpoint,
                  subscription.keys.p256dh, subscription.keys.auth))
         return {"ok": True}
