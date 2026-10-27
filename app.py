@@ -129,7 +129,7 @@ class AdminPasswordReset(BaseModel):password:str=Field(min_length=12)
 class NewAgency(BaseModel):name:str
 class NewBranch(BaseModel):name:str;agency_id:int
 class NewUser(BaseModel):username:str;display_name:str;password:str=Field(min_length=12);role:str;branch_id:int|None=None;email:str|None=None
-class PolicyInput(BaseModel):agency_id:int;branch_id:int|None=None;owner_user_id:int|None=None;customer_name:str;policy_type:str;policy_number:str;insurer:str='';premium:float=Field(ge=0);start_date:date;end_date:date;issued_date:date;tracking:bool=False;external:bool=False;seller_user_id:int|None=None
+class PolicyInput(BaseModel):agency_id:int;branch_id:int|None=None;owner_user_id:int|None=None;customer_name:str;policy_type:str;policy_number:str;insurer:str='';premium:float=Field(ge=0);start_date:date;end_date:date;issued_date:date;tracking:bool=True;external:bool=False;seller_user_id:int|None=None
 class RenewalUpdate(BaseModel):status:str;new_policy:PolicyInput|None=None
 class Transfer(BaseModel):from_user_id:int;to_user_id:int;policy_ids:list[int]|None=None
 class Theme(BaseModel):theme:str
