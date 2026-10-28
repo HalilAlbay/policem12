@@ -6,6 +6,8 @@ on:
     paths:
       - 'packaging/**'
       - 'tests/test_pilot_backup.py'
+      - 'tests/test_win10_first_run_flow.py'
+      - 'static/index.html'
       - '.github/workflows/windows-server-package.yml'
 permissions:
   contents: read
@@ -25,6 +27,8 @@ jobs:
           python -m pip install "pyinstaller>=6.10,<7"
       - name: Unit test backup and restore
         run: python -m unittest discover -s tests -p test_pilot_backup.py -v
+      - name: Test Windows 10 setup and login flow
+        run: python -m unittest discover -s tests -p test_win10_first_run_flow.py -v
       - name: Package executable
         run: python -m PyInstaller --noconfirm packaging/PolicemServer.spec
       - name: Check output
