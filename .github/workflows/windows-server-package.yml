@@ -7,6 +7,7 @@ on:
       - 'packaging/**'
       - 'tests/test_pilot_backup.py'
       - 'tests/test_win10_first_run_flow.py'
+      - 'tests/test_win10_updater_contract.py'
       - 'static/index.html'
       - '.github/workflows/windows-server-package.yml'
 permissions:
@@ -29,6 +30,8 @@ jobs:
         run: python -m unittest discover -s tests -p test_pilot_backup.py -v
       - name: Test Windows 10 setup and login flow
         run: python -m unittest discover -s tests -p test_win10_first_run_flow.py -v
+      - name: Test Windows 10 updater contracts
+        run: python -m unittest discover -s tests -p test_win10_updater_contract.py -v
       - name: Package executable
         run: python -m PyInstaller --noconfirm packaging/PolicemServer.spec
       - name: Check output
