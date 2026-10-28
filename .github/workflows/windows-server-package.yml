@@ -55,6 +55,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
           if (!(Test-Path dist-installer/Policem_Setup.exe)) { throw 'Setup.exe missing' }
           Get-FileHash dist-installer/Policem_Setup.exe -Algorithm SHA256
+      - name: Compile Windows 10 isolated test installer
+        shell: pwsh
+        run: |
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          & $compiler packaging/Policem-Test.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 10 installer compilation failed' }
+          if (!(Test-Path dist-installer/Policem_Setup_Win10_TEST.exe)) { throw 'Windows 10 setup missing' }
+          Get-FileHash dist-installer/Policem_Setup_Win10_TEST.exe -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Policem-Win10-TEST-UNSIGNED
+          path: dist-installer/Policem_Setup_Win10_TEST.exe
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: Policem-Setup-UNSIGNED-TEST-ONLY
