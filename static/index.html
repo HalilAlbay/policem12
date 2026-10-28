@@ -19,7 +19,32 @@ const sessionChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('
 async function refreshBranding(){let b=await fetch('/api/branding').then(r=>r.json());$('brandTitle').textContent=b.app_name;document.title=b.app_name;document.documentElement.style.setProperty('--brand',b.color);let url=b.icon_url+'?v='+Date.now();$('appIcon').href=b.has_icon?url:'data:,';}
 
 function msg(s,bad=false){$('msg').textContent=s;$('msg').className=bad?'error':'success'}
-async function api(path,method='GET',body){let headers={},opts={method,headers};if(token){headers.Authorization='Bearer '+token;if(Date.now()-lastUserInteractionAt<10000)headers['X-User-Interaction']='1'}if(body instanceof FormData)opts.body=body;else if(body!==undefined){headers['Content-Type']='application/json';opts.body=JSON.stringify(body)}let res=await fetch('/api/'+path,opts);let data=await res.json().catch(()=>({detail:'Sunucu hatası'}));if(!res.ok){const code=typeof data.detail==='object'?data.detail.code:null;if(code==='SESSION_IDLE')lockSession('idle');const messages={SESSION_IDLE:'Oturum kilitlendi. Yeniden giriş yapın.',RATE_LIMITED:'Çok fazla deneme yapıldı. Bir süre sonra tekrar deneyin.',METHOD_UNAVAILABLE:'Bu giriş yöntemi şu anda güvenli biçimde kullanılamıyor.',ORIGIN_DENIED:'Güvenli bağlantı doğrulanamadı.'};throw Error(messages[code]||(typeof data.detail==='string'?data.detail:'İşlem başarısız'))}if(path==='me'&&data.idle_expires_at){idleDeadline=data.idle_expires_at*1000;if(!idleTimer)idleTimer=setInterval(checkIdleDeadline,500)}return data}
+async function api(path,method='GET',body){
+ let headers={'Accept':'application/json'},opts={method,headers};
+ if(token){headers.Authorization='Bearer '+token;if(Date.now()-lastUserInteractionAt<10000)headers['X-User-Interaction']='1'}
+ if(body instanceof FormData)opts.body=body;
+ else if(body!==undefined){headers['Content-Type']='application/json';opts.body=JSON.stringify(body)}
+ let res;
+ try{res=await fetch('/api/'+path,opts)}
+ catch(e){throw Error('Sunucuya bağlanılamadı. Telefonun internet bağlantısını ve HTTPS tünelini kontrol edin.')}
+ const contentType=(res.headers.get('content-type')||'').toLowerCase();
+ if(!contentType.includes('application/json')){
+  if(location.hostname.endsWith('.trycloudflare.com')){
+   throw Error('Telefon bağlantısı doğrulaması API isteğinde korunmuyor (HTTP '+res.status+'). Cloudflare erişim oturumunu kontrol edin. Bu bir şifre hatası değil.');
+  }
+  throw Error('Sunucu beklenmeyen yanıt verdi (HTTP '+res.status+').');
+ }
+ let data;
+ try{data=await res.json()}catch(e){throw Error('Sunucunun JSON yanıtı okunamadı (HTTP '+res.status+').')}
+ if(!res.ok){
+  const code=typeof data.detail==='object'?data.detail.code:null;
+  if(code==='SESSION_IDLE')lockSession('idle');
+  const messages={SESSION_IDLE:'Oturum kilitlendi. Yeniden giriş yapın.',RATE_LIMITED:'Çok fazla deneme yapıldı. Bir süre sonra tekrar deneyin.',METHOD_UNAVAILABLE:'Bu giriş yöntemi şu anda güvenli biçimde kullanılamıyor.',ORIGIN_DENIED:'Güvenli bağlantı doğrulanamadı.'};
+  throw Error(messages[code]||(typeof data.detail==='string'?data.detail:'İşlem başarısız (HTTP '+res.status+')'));
+ }
+ if(path==='me'&&data.idle_expires_at){idleDeadline=data.idle_expires_at*1000;if(!idleTimer)idleTimer=setInterval(checkIdleDeadline,500)}
+ return data
+}
 async function safe(fn){try{await fn()}catch(e){msg(e.message,true)}}
 async function checkFirstSetup(){try{let x=await api('setup/status');$('setupKeyArea').classList.toggle('hidden',!x.requires_setup_key);$('setupView').classList.toggle('hidden',!x.needs_setup);$('loginView').classList.toggle('hidden',x.needs_setup)}catch(e){msg(e.message,true)}}
 async function createFirstAccount(){
