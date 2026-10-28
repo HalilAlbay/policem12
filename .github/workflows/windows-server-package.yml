@@ -1,4 +1,4 @@
-name: Windows Server package validation
+name: Windows Server installer candidate
 on:
   workflow_dispatch:
   push:
@@ -7,30 +7,57 @@ on:
       - 'packaging/**'
       - 'tests/test_pilot_backup.py'
       - '.github/workflows/windows-server-package.yml'
+permissions:
+  contents: read
 jobs:
   package:
     runs-on: windows-2022
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
+      - name: Install Python dependencies
+        shell: pwsh
         run: |
           python -m pip install -r requirements.txt
           python -m pip install "pyinstaller>=6.10,<7"
-      - name: Test backup and restore
+      - name: Unit test backup and restore
         run: python -m unittest discover -s tests -p test_pilot_backup.py -v
       - name: Package executable
         run: python -m PyInstaller --noconfirm packaging/PolicemServer.spec
-      - name: Verify output
+      - name: Check output
         shell: pwsh
         run: ./packaging/verify-build.ps1
-      - name: Test packaged server
+      - name: Smoke test frozen server
         shell: pwsh
         run: ./packaging/smoke-windows.ps1
+      - name: Obtain pinned Windows service wrapper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/WinSW | Out-Null
+          $url = 'https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe'
+          Invoke-WebRequest -Uri $url -OutFile dist/WinSW/PolicemService.exe
+          if ((Get-Item dist/WinSW/PolicemService.exe).Length -lt 100000) { throw 'Invalid service wrapper download' }
+          Get-FileHash dist/WinSW/PolicemService.exe -Algorithm SHA256
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $compiler)) { throw 'ISCC.exe not found' }
+          & $compiler packaging/Policem.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          if (!(Test-Path dist-installer/Policem_Setup.exe)) { throw 'Setup.exe missing' }
+          Get-FileHash dist-installer/Policem_Setup.exe -Algorithm SHA256
       - uses: actions/upload-artifact@v4
         with:
-          name: PolicemServer-windows-2022-unsigned
-          path: dist/PolicemServer/
+          name: Policem-Setup-UNSIGNED-TEST-ONLY
+          path: dist-installer/Policem_Setup.exe
+          if-no-files-found: error
           retention-days: 7
