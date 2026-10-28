@@ -6,6 +6,7 @@ the archive; upload concurrency must be quiesced by the operator for a guarantee
 cross-resource snapshot. No automatic deletion of older backups.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -31,8 +32,8 @@ def backup(data_dir: Path, destination: Path):
         raise FileExistsError(f"Backup already exists: {destination}")
     with tempfile.TemporaryDirectory(prefix="policem-backup-") as tmp:
         db_copy = Path(tmp) / "policem.sqlite3"
-        with sqlite3.connect(f"file:{source_db.as_posix()}?mode=ro", uri=True) as src:
-            with sqlite3.connect(db_copy) as dst:
+        with closing(sqlite3.connect(f"file:{source_db.as_posix()}?mode=ro", uri=True)) as src:
+            with closing(sqlite3.connect(db_copy)) as dst:
                 src.backup(dst)
                 if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError("Snapshot database integrity check failed")
@@ -91,7 +92,7 @@ def restore(archive_path: Path, target: Path):
                 out = target / name
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(archive.read(name))
-        with sqlite3.connect(target / "policem.sqlite3") as db:
+        with closing(sqlite3.connect(target / "policem.sqlite3")) as db:
             if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("Restored database integrity check failed")
     except BaseException:
