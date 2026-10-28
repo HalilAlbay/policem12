@@ -4,6 +4,7 @@
 [Setup]
 AppId={{B89A62F1-8B55-4B7D-B2F7-8AC5C88B6E7A}
 AppName={#AppName}
+AppComments=Pilot staging only - service must be configured and approved separately
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\Policem
@@ -26,10 +27,6 @@ Name: "{commonappdata}\Policem\data"; Permissions: admins-full system-full
 Name: "{commonappdata}\Policem\data\documents"; Permissions: admins-full system-full
 Name: "{commonappdata}\Policem\logs"; Permissions: admins-full system-full
 Name: "{commonappdata}\Policem\backups"; Permissions: admins-full system-full
-[Run]
-Filename: "{app}\PolicemService.exe"; Parameters: "install"; Flags: runhidden waituntilterminated; Check: not ServiceExists
-[UninstallRun]
-Filename: "{app}\PolicemService.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated
 [Code]
 function ServiceExists(): Boolean;
 var ResultCode: Integer;
