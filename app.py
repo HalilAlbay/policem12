@@ -337,6 +337,12 @@ def webauthn_register_options(data:WebAuthnRegisterOptions,request:Request,u=Dep
   if count>=10:raise HTTPException(409,detail={'code':'DEVICE_LIMIT'})
   row=c.execute('SELECT webauthn_user_handle FROM users WHERE id=? AND active=1',(u['id'],)).fetchone()
   if not row:raise HTTPException(401,detail={'code':'AUTH_REQUIRED'})
+  # Older databases may contain users created after startup migration with a NULL handle.
+  # Initialize once and persist it; never rotate an existing WebAuthn user handle.
+  if not row['webauthn_user_handle']:
+   handle=secrets.token_urlsafe(32)
+   c.execute('UPDATE users SET webauthn_user_handle=? WHERE id=? AND webauthn_user_handle IS NULL',(handle,u['id']))
+   row=c.execute('SELECT webauthn_user_handle FROM users WHERE id=?',(u['id'],)).fetchone()
   excludes=[PublicKeyCredentialDescriptor(id=base64url_to_bytes(x['credential_id'])) for x in c.execute('SELECT credential_id FROM webauthn_credentials WHERE user_id=? AND revoked_at IS NULL',(u['id'],))]
   options=generate_registration_options(rp_id=rp_id,rp_name='Poliçem',user_name=u['username'],user_display_name=u['display_name'],user_id=row['webauthn_user_handle'].encode(),challenge=challenge,timeout=300000,authenticator_selection=AuthenticatorSelectionCriteria(authenticator_attachment=AuthenticatorAttachment.PLATFORM,resident_key=ResidentKeyRequirement.REQUIRED,require_resident_key=True,user_verification=UserVerificationRequirement.REQUIRED),exclude_credentials=excludes)
   c.execute('INSERT INTO webauthn_challenges(id,purpose,user_id,session_hash,challenge,label,created_at,expires_at,installation_id) VALUES (?,?,?,?,?,?,?,?,?)',(ceremony_id,'register',u['id'],session_hash,challenge,label,now,now+300,data.installation_id))
