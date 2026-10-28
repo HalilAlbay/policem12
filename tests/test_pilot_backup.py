@@ -19,6 +19,7 @@ class PilotBackupTests(unittest.TestCase):
             with closing(sqlite3.connect(data / "policem.sqlite3")) as db:
                 db.execute("CREATE TABLE policies (id INTEGER PRIMARY KEY, number TEXT)")
                 db.execute("INSERT INTO policies(number) VALUES ('TEST-001')")
+                db.commit()
             archive = root / "snapshot.zip"
             mod.backup(data, archive)
             self.assertEqual(mod.verify(archive), 2)
