@@ -1,7 +1,8 @@
 # PyInstaller spec; build on Windows with: pyinstaller --noconfirm packaging/PolicemServer.spec
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
-root = Path(SPECPATH).parent.parent
+root = Path(SPECPATH).resolve().parent
+assert (root / 'packaging' / 'server_entry.py').is_file(), f'Missing entrypoint under {root}'
 datas = [(str(root / 'static'), 'static')]
 hiddenimports = ['customer_portal', 'notification_core', 'push_service', 'reminder_job', 'push_job']
 binaries = []
