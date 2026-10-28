@@ -18,10 +18,12 @@ UninstallDisplayIcon={app}\PolicemServer.exe
 Source: "..\dist\PolicemServer\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "run-win10-test.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "phone-test.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "update-win10-test.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autodesktop}\Policem TEST"; Filename: "{app}\run-win10-test.cmd"; WorkingDir: "{app}"
 Name: "{group}\Policem TEST"; Filename: "{app}\run-win10-test.cmd"; WorkingDir: "{app}"
 Name: "{autodesktop}\Policem Telefon Testi"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\phone-test.ps1"""; WorkingDir: "{app}"
 Name: "{group}\Policem Telefon Testi"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\phone-test.ps1"""; WorkingDir: "{app}"
+Name: "{autodesktop}\Policem Guncelle"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\update-win10-test.ps1"""; WorkingDir: "{app}"
 [Run]
 Filename: "{app}\run-win10-test.cmd"; Description: "Policem TEST uygulamasini baslat"; Flags: postinstall nowait skipifsilent shellexec
