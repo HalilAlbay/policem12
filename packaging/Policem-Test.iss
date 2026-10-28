@@ -19,6 +19,7 @@ Source: "..\dist\PolicemServer\*"; DestDir: "{app}"; Flags: recursesubdirs creat
 Source: "run-win10-test.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "phone-test.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "update-win10-test.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "installed-release.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autodesktop}\Policem TEST"; Filename: "{app}\run-win10-test.cmd"; WorkingDir: "{app}"
 Name: "{group}\Policem TEST"; Filename: "{app}\run-win10-test.cmd"; WorkingDir: "{app}"
