@@ -73,7 +73,7 @@
         $('quickPassword').value = '';
         await loadSecurityDevices();
         const method = await window.refreshLoginMethodUI?.();
-        if (method !== 'pin') throw Error('PIN kaydı doğrulanamadı. Sunucudaki cihaz ayarlarını kontrol edin.');
+        if (method !== 'pin') { msg('PIN kaydı yapıldı ancak giriş yöntemi doğrulanamadı. Şifreyle giriş yapın.', true); return; }
         showPinUnlock();
         msg('PIN kaydedildi. Sonraki girişte 4 haneli PIN alanı açılacak.');
       } catch (error) {
