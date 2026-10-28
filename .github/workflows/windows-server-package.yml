@@ -1,10 +1,11 @@
-name: Windows Server package
+name: Windows Server package validation
 on:
   workflow_dispatch:
   push:
     branches: [feature/windows-server-installer-v1]
     paths:
       - 'packaging/**'
+      - 'tests/test_pilot_backup.py'
       - '.github/workflows/windows-server-package.yml'
 jobs:
   package:
@@ -18,11 +19,16 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m pip install "pyinstaller>=6.10,<7"
+      - name: Test backup and restore
+        run: python -m unittest discover -s tests -p test_pilot_backup.py -v
       - name: Package executable
         run: python -m PyInstaller --noconfirm packaging/PolicemServer.spec
       - name: Verify output
         shell: pwsh
         run: ./packaging/verify-build.ps1
+      - name: Test packaged server
+        shell: pwsh
+        run: ./packaging/smoke-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: PolicemServer-windows-2022-unsigned
