@@ -1,0 +1,16 @@
+<service>
+  <id>PolicemServer</id>
+  <name>Poliçem Server</name>
+  <description>Poliçem pilot agency application server</description>
+  <executable>%BASE%\PolicemServer.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <env name="POLICEM_DATA" value="%ProgramData%\Policem\data"/>
+  <env name="POLICEM_BIND_HOST" value="127.0.0.1"/>
+  <env name="POLICEM_PORT" value="8000"/>
+  <logpath>%ProgramData%\Policem\logs</logpath>
+  <log mode="roll"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>30 sec</stoptimeout>
+  <startmode>Automatic</startmode>
+</service>
