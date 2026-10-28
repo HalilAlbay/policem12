@@ -10,7 +10,7 @@ on:
       - 'static/index.html'
       - '.github/workflows/windows-server-package.yml'
 permissions:
-  contents: read
+  contents: write
 jobs:
   package:
     runs-on: windows-2022
@@ -59,6 +59,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
           if (!(Test-Path dist-installer/Policem_Setup.exe)) { throw 'Setup.exe missing' }
           Get-FileHash dist-installer/Policem_Setup.exe -Algorithm SHA256
+      - name: Stamp Windows 10 TEST release version
+        shell: pwsh
+        run: |
+          $tag = "win10-test-${{ github.run_number }}"
+          Set-Content -Path packaging/installed-release.txt -Value $tag -NoNewline -Encoding ascii
+          Write-Host "Windows 10 TEST build: $tag"
       - name: Compile Windows 10 isolated test installer
         shell: pwsh
         run: |
@@ -67,6 +73,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows 10 installer compilation failed' }
           if (!(Test-Path dist-installer/Policem_Setup_Win10_TEST.exe)) { throw 'Windows 10 setup missing' }
           Get-FileHash dist-installer/Policem_Setup_Win10_TEST.exe -Algorithm SHA256
+      - name: Generate Windows 10 installer checksum
+        shell: pwsh
+        run: |
+          $exe = 'dist-installer/Policem_Setup_Win10_TEST.exe'
+          $hash = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "$exe.sha256" -Value "$hash  Policem_Setup_Win10_TEST.exe" -Encoding ascii
+      - name: Publish latest Windows 10 TEST release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "win10-test-${{ github.run_number }}"
+          gh release create $tag dist-installer/Policem_Setup_Win10_TEST.exe dist-installer/Policem_Setup_Win10_TEST.exe.sha256 --target "${{ github.sha }}" --title "Policem Windows 10 TEST $tag" --notes "UNSIGNED TEST BUILD ONLY. Not production. Existing LocalAppData PolicemTest data is preserved by the installer." --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publish failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: Policem-Win10-TEST-UNSIGNED
