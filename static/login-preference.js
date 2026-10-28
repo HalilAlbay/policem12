@@ -8,6 +8,7 @@
       if (id) {
         const res = await fetch('/api/security/login-method?installation_id=' + encodeURIComponent(id));
         if (res.ok) method = (await res.json()).method || 'password';
+        else if (res.status >= 500) console.warn('Login method lookup failed:',res.status);
       }
     } catch (_) { /* Offline or unknown selection safely shows password login. */ }
     if (methodBox) methodBox.textContent = 'Bu cihazdaki seçili yöntem: ' + ({pin:'4 haneli PIN',webauthn:'Face ID / cihaz doğrulaması',password:'Hesap şifresi'}[method] || 'Hesap şifresi');
@@ -20,17 +21,20 @@
       const pinArea = document.getElementById('pinUnlockArea');
       const fallback = document.getElementById('passwordFallbackButton');
       const quick = method === 'pin' || method === 'webauthn';
-      if (username) setShown(username.previousElementSibling, !quick);
-      setShown(username, !quick); setShown(password?.previousElementSibling, !quick); setShown(password, !quick);
-      setShown(passwordButton, !quick);
+      const pinReady = method === 'pin' && !!localStorage.getItem('policem_pin_device_id');
+      const effectiveQuick = method === 'webauthn' || pinReady;
+      if (username) setShown(username.previousElementSibling, !effectiveQuick);
+      setShown(username, !effectiveQuick); setShown(password?.previousElementSibling, !effectiveQuick); setShown(password, !effectiveQuick);
+      setShown(passwordButton, !effectiveQuick);
       setShown(passkeyButton, method === 'webauthn');
-      setShown(pinArea, method === 'pin' && !!localStorage.getItem('policem_pin_device_id'));
-      if (quick && !fallback) {
+      setShown(pinArea, pinReady);
+      if (effectiveQuick && !fallback) {
         const b=document.createElement('button');b.id='passwordFallbackButton';b.className='ghost';b.textContent='Hesap şifresiyle giriş';
-        b.onclick=()=>{setShown(username.previousElementSibling,true);setShown(username,true);setShown(password.previousElementSibling,true);setShown(password,true);setShown(passwordButton,true);setShown(b,false)};
-        document.getElementById('passkeyLoginButton')?.after(b);if(method==='pin')pinArea?.after(b);
-      } else if (fallback) setShown(fallback, quick);
+        b.onclick=()=>{setShown(username.previousElementSibling,true);setShown(username,true);setShown(password.previousElementSibling,true);setShown(password,true);setShown(passwordButton,true);setShown(pinArea,false);setShown(passkeyButton,false);setShown(b,false)};
+        (method==='pin' ? pinArea : passkeyButton)?.after(b);
+      } else if (fallback) setShown(fallback, effectiveQuick);
     }
+    if (method === 'pin' && !pinReady && methodBox) methodBox.textContent = 'PIN kaydı bu tarayıcıda bulunamadı. PIN’i yeniden kurun.';
     return method;
   }
   function setupPreferenceSettings() {
