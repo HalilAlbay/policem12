@@ -33,9 +33,11 @@ async function createFirstAccount(){
  try{
   let x=await api('setup','POST',{setup_key:$('setupKey').value,username,display_name,password});
   feedback.textContent=x.message||'Hesap oluşturuldu.';feedback.className='success';
-  $('username').value=username;$('password').value=password;
+  $('username').value=username;$('password').value='';
+  $('setupPassword').value='';
   $('setupView').classList.add('hidden');$('loginView').classList.remove('hidden');
-  await login();
+  $('loginFeedback').textContent='Kurulum tamamlandı. Oluşturduğunuz kullanıcı adı ve şifreyle giriş yapın.';
+  $('loginFeedback').className='success';
  }catch(e){feedback.textContent=e.message||'Hesap oluşturulamadı.';feedback.className='error'}
  finally{button.disabled=false;button.textContent='Hesabı Oluştur'}
 }
@@ -116,5 +118,13 @@ async function confirmRenewal(){await safe(async()=>{let old=pendingRenewal;if(!
 async function loadAudit(){await safe(async()=>{let a=await api('audit');$('auditList').innerHTML='<div class="tablewrap"><table>'+a.map(x=>`<tr><td>${esc(x.created_at)}</td><td>${esc(x.actor)}</td><td>${esc(x.action)}</td><td>${esc(x.entity)} #${esc(x.entity_id)}</td></tr>`).join('')+'</table></div>'})}
 async function changePassword(){await safe(async()=>{await api('password','POST',{old:$('oldPw').value,new:$('newPw').value});lockSession('logout');$('loginStatus').textContent='Şifre değiştirildi. Yeni şifrenizle tekrar giriş yapın.'})}
 async function saveTheme(){await safe(async()=>{await api('theme','POST',{theme:$('theme').value});document.documentElement.style.setProperty('--brand',$('theme').value);msg('Renk kaydedildi')})}
-setupPasskeyUI();refreshBranding().catch(()=>{});if(token)boot();else checkFirstSetup().then(()=>{setupPasskeyUI();const username=localStorage.getItem('policem_last_username');if(username)$('username').value=username});
+setupPasskeyUI();refreshBranding().catch(()=>{});
+const localWin10Test=location.hostname==='127.0.0.1'&&location.port==='8000'&&location.protocol==='http:';
+if(localWin10Test){token=null;sessionStorage.removeItem('policem_token')}
+checkFirstSetup().then(()=>{
+ setupPasskeyUI();
+ const username=localStorage.getItem('policem_last_username');
+ if(username&&!$('username').value)$('username').value=username;
+ if(token&&!localWin10Test&&!(!$('setupView').classList.contains('hidden')))boot();
+});
 </script><script src="/static/account-recovery.js" defer></script><script src="/static/pin-client.js?v=secure-login-2" defer></script><script src="/static/login-preference.js?v=secure-login-2" defer></script><script src="/static/push-client.js" defer></script></body></html>
