@@ -50,10 +50,8 @@
   async function enrollPin() {
     await safe(async () => {
       if (!crypto?.subtle || !indexedDB) throw Error('Bu tarayıcı güvenli cihaz anahtarını saklayamıyor. Şifreyle giriş kullanın.');
-      const pin = prompt('Yeni 4 haneli PIN’i girin:');
-      if (pin === null) return;
-      const confirmPin = prompt('PIN’i tekrar girin:');
-      if (confirmPin === null) return;
+      const pin = $('quickSetupPin')?.value || '';
+      const confirmPin = $('quickConfirmPin')?.value || '';
       if (!/^\d{4}$/.test(pin) || pin !== confirmPin) throw Error('PIN’ler aynı ve dört rakam olmalıdır.');
       const label = $('quickDeviceName').value.trim();
       if (!label) throw Error('Önce cihaz adını yazın.');
@@ -71,6 +69,8 @@
         });
         localStorage.setItem(DEVICE_KEY, begin.device_id);
         $('quickPassword').value = '';
+        $('quickSetupPin').value = '';
+        $('quickConfirmPin').value = '';
         await loadSecurityDevices();
         const method = await window.refreshLoginMethodUI?.();
         if (method !== 'pin') { msg('PIN kaydı yapıldı ancak giriş yöntemi doğrulanamadı. Şifreyle giriş yapın.', true); return; }
