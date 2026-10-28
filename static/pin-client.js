@@ -61,6 +61,8 @@
       const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
       const publicKey = await crypto.subtle.exportKey('jwk', pair.publicKey);
       await keyStore('readwrite', begin.device_id, pair.privateKey);
+      const persistedKey = await keyStore('readonly', begin.device_id);
+      if (!persistedKey) throw Error('PIN cihaz anahtarı kaydedilemedi. Safari ayarlarını kontrol edin.');
       try {
         const signature = await sign(pair.privateKey, 'enroll', begin.ceremony_id, begin.device_id, begin.challenge);
         await api('security/pin/enroll/verify', 'POST', {
@@ -69,10 +71,11 @@
         });
         localStorage.setItem(DEVICE_KEY, begin.device_id);
         $('quickPassword').value = '';
-        showPinUnlock();
-        window.refreshLoginMethodUI?.();
         await loadSecurityDevices();
-        msg('PIN ile güvenilir cihaz kaydedildi');
+        const method = await window.refreshLoginMethodUI?.();
+        if (method !== 'pin') throw Error('PIN kaydı doğrulanamadı. Sunucudaki cihaz ayarlarını kontrol edin.');
+        showPinUnlock();
+        msg('PIN kaydedildi. Sonraki girişte 4 haneli PIN alanı açılacak.');
       } catch (error) {
         const d = await db(); d.transaction(STORE, 'readwrite').objectStore(STORE).delete(begin.device_id);
         throw error;
