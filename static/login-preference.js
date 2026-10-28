@@ -13,6 +13,7 @@
     } catch (_) { /* Offline or unknown selection safely shows password login. */ }
     if (methodBox) methodBox.textContent = 'Bu cihazdaki seçili yöntem: ' + ({pin:'4 haneli PIN',webauthn:'Face ID / cihaz doğrulaması',password:'Hesap şifresi'}[method] || 'Hesap şifresi');
 
+    const pinReady = method === 'pin' && !!localStorage.getItem('policem_pin_device_id');
     const login = document.getElementById('loginView');
     if (login) {
       const username = document.getElementById('username'), password = document.getElementById('password');
@@ -21,7 +22,6 @@
       const pinArea = document.getElementById('pinUnlockArea');
       const fallback = document.getElementById('passwordFallbackButton');
       const quick = method === 'pin' || method === 'webauthn';
-      const pinReady = method === 'pin' && !!localStorage.getItem('policem_pin_device_id');
       const effectiveQuick = method === 'webauthn' || pinReady;
       if (username) setShown(username.previousElementSibling, !effectiveQuick);
       setShown(username, !effectiveQuick); setShown(password?.previousElementSibling, !effectiveQuick); setShown(password, !effectiveQuick);
