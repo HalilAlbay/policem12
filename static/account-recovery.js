@@ -58,13 +58,13 @@
     const login = $('loginView');
     if (login && !$('emailPasswordResetButton')) {
       const button = document.createElement('button'); button.id='emailPasswordResetButton';
-      button.className='ghost'; button.textContent='E-postayla şifre sıfırlama'; button.onclick=requestPasswordReset;
-      login.querySelector('h1')?.after(button);
+      button.className='ghost'; button.textContent='Şifremi unuttum'; button.onclick=requestPasswordReset;
+      login.querySelector('button[onclick="login()"]')?.after(button);
     }
     const settings = $('settings');
     if (settings && !$('accountEmailCard')) {
       const card=document.createElement('div'); card.id='accountEmailCard'; card.className='card';
-      card.innerHTML='<h2>E-posta doğrulama ve şifre kurtarma</h2><p id="accountEmailStatus" class="muted"></p><label for="accountEmail">E-posta adresi</label><input id="accountEmail" type="email" maxlength="254" autocomplete="email"><p><button id="verifyEmailButton">Doğrulama bağlantısı gönder</button></p><p class="muted">E-posta ile sıfırlama yalnızca doğrulanmış adreslerde kullanılabilir. Kayıp telefon için acente yetkilisinin verdiği geçici şifre akışı ayrıdır.</p>';
+      card.innerHTML='<h2>E-posta doğrulama ve şifre kurtarma</h2><p id="accountEmailStatus" class="muted"></p><label for="accountEmail">E-posta adresi</label><input id="accountEmail" type="email" maxlength="254" autocomplete="email"><p><button id="verifyEmailButton">Doğrulama bağlantısı gönder</button></p>';
       $('brandingSettings')?.before(card);
       $('verifyEmailButton').onclick=requestEmailVerification;
     }
