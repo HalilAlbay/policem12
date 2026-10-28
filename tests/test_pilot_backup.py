@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ class PilotBackupTests(unittest.TestCase):
             data = root / "data"
             (data / "documents").mkdir(parents=True)
             (data / "documents" / "policy.pdf").write_bytes(b"%PDF-1.4 test")
-            with sqlite3.connect(data / "policem.sqlite3") as db:
+            with closing(sqlite3.connect(data / "policem.sqlite3")) as db:
                 db.execute("CREATE TABLE policies (id INTEGER PRIMARY KEY, number TEXT)")
                 db.execute("INSERT INTO policies(number) VALUES ('TEST-001')")
             archive = root / "snapshot.zip"
@@ -24,7 +25,7 @@ class PilotBackupTests(unittest.TestCase):
             restored = root / "restored"
             mod.restore(archive, restored)
             self.assertEqual((restored / "documents" / "policy.pdf").read_bytes(), b"%PDF-1.4 test")
-            with sqlite3.connect(restored / "policem.sqlite3") as db:
+            with closing(sqlite3.connect(restored / "policem.sqlite3")) as db:
                 self.assertEqual(db.execute("SELECT number FROM policies").fetchone()[0], "TEST-001")
             with self.assertRaises(FileExistsError):
                 mod.restore(archive, restored)
