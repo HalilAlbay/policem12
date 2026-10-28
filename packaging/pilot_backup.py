@@ -35,6 +35,7 @@ def backup(data_dir: Path, destination: Path):
         with closing(sqlite3.connect(f"file:{source_db.as_posix()}?mode=ro", uri=True)) as src:
             with closing(sqlite3.connect(db_copy)) as dst:
                 src.backup(dst)
+                dst.commit()
                 if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError("Snapshot database integrity check failed")
         manifest = {"format": 1, "created_utc": int(time.time()), "files": {}}
