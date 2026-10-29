@@ -42,7 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(title: Text('Poliçem • ${widget.user['display_name'] ?? ''}'),
         actions: [
           IconButton(onPressed: loading ? null : load, icon: const Icon(Icons.refresh)),
-          IconButton(icon: const Icon(Icons.apps), tooltip:'İşlemler', onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>OperationsScreen(api:widget.api,token:widget.token,role:'${widget.user['role']}')))),
+          IconButton(icon: const Icon(Icons.apps), tooltip:'İşlemler', onPressed:()async{await Navigator.push(context,MaterialPageRoute(builder:(_)=>OperationsScreen(api:widget.api,token:widget.token,role:'${widget.user['role']}')));if(mounted)load();}),
           IconButton(onPressed: widget.onLogout, icon: const Icon(Icons.logout)),
         ]),
       body: ListView(padding: const EdgeInsets.all(16), children: [
