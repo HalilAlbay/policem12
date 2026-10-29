@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'src/api/policem_api.dart';
 import 'src/auth/session_manager.dart';
+import 'src/auth/biometric_gate.dart';
+import 'src/screens/dashboard_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +27,9 @@ class _LoginScreenState extends State<LoginScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
   final session = SessionManager(PolicemApi());
+  final biometric = BiometricGate();
+  bool biometricsAvailable = false;
+  bool biometricsEnabled = false;
   bool busy = false;
   String? error;
   Map<String, dynamic>? user;
@@ -36,6 +41,15 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _restore() async {
     setState(() => busy = true);
     try {
+      biometricsAvailable = await biometric.available();
+      biometricsEnabled = await biometric.enabled();
+      if (biometricsEnabled) {
+        final unlocked = await biometric.verify();
+        if (!unlocked) {
+          if (mounted) setState(() => error = 'Biyometrik doğrulama gerekli.');
+          return;
+        }
+      }
       final restored = await session.restore();
       if (mounted) setState(() => user = restored);
     } catch (_) {
@@ -62,6 +76,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => busy = true);
     try {
       await session.logout();
+      await biometric.disable();
       if (mounted) setState(() { user = null; error = null; });
     } catch (_) {
       if (mounted) setState(() => error = 'Çıkış işlemi tamamlanamadı.');
@@ -69,12 +84,31 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) setState(() => busy = false);
     }
   }
+  Future<void> _enableBiometrics() async {
+    final ok = await biometric.enroll();
+    if (mounted) setState(() {
+      biometricsEnabled = ok;
+      error = ok ? null : 'Biyometrik doğrulama etkinleştirilemedi.';
+    });
+  }
   @override void dispose() {
     username.dispose(); password.dispose(); session.api.close(); super.dispose();
   }
   @override Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Poliçem')),
-    body: Center(child: ConstrainedBox(
+    body: user != null ? Column(children: [
+      if (biometricsAvailable && !biometricsEnabled)
+        ListTile(title: const Text('Face ID / Parmak izi ile aç'),
+          trailing: FilledButton(onPressed: _enableBiometrics, child: const Text('Etkinleştir'))),
+      Expanded(child: FutureBuilder<String?>(
+        future: session.accessToken(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          return DashboardScreen(key: ValueKey(snapshot.data), api: session.api,
+            token: snapshot.data!, user: user!, onLogout: _logout);
+        },
+      )),
+    ]) : Center(child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 420),
       child: Padding(padding: const EdgeInsets.all(24),
         child: user == null
