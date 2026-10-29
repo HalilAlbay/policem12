@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../api/policem_api.dart';
 import 'pdf_review_screen.dart';
+import 'transfer_screen.dart';
 
 class OperationsScreen extends StatefulWidget {
   final PolicemApi api;
@@ -204,7 +205,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
           catch(e){if(mounted)setState(()=>error='$e');}},
           child:const Text('Logoyu Kaldır')),
         if(section=='transfer'&&manager)FilledButton(
-          onPressed:()=>form('Poliçe Devri','/api/transfer',['from_user_id','to_user_id']),
+          onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>TransferScreen(api:widget.api,token:widget.token))),
           child:const Text('Devir Oluştur')),
         if(section=='users'&&manager)FilledButton(
           onPressed:()=>form('Personel Ekle','/api/users',['username','display_name','password','role','branch_id','email','phone','job_title']),
