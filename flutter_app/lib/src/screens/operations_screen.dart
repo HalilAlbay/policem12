@@ -121,7 +121,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
     finally{if(mounted)setState(()=>busy=false);}
   }
   Future<void> form(String title,String path,List<String> fields,{String method='POST',Map? initial}) async{
-    final ctrls={for(final f in fields) f:TextEditingController(text:initial?[f]?.toString()??'')};
+    final ctrls={for(final f in fields) f:TextEditingController(text:initial?[f]?.toString()??(f=='tracking'||f=='active'?'true':f=='external'?'false':''))};
     final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,dialogSetState)=>AlertDialog(
       title:Text(title),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,
         children:[for(final f in fields)
@@ -234,7 +234,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
           onChanged:(v){if(v!=null){setState(()=>period=v);load();}}),
         if(section=='pdf')FilledButton(onPressed:busy?null:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>PdfReviewScreen(api:widget.api,token:widget.token))),child:const Text('PDF Yükle, Kontrol Et ve Kaydet')),
         if(section=='policies')FilledButton(onPressed:()=>form('Yeni Poliçe','/api/policies',
-          ['agency_id','branch_id','customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date']),
+          ['agency_id','branch_id','customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date','tracking','external']),
           child:const Text('Poliçe Ekle')),
         if(section=='organization'&&manager)...[
           if(partner)FilledButton(onPressed:()=>form('Acente Ekle','/api/agencies',['name']),child:const Text('Acente Ekle')),
