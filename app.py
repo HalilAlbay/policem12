@@ -1248,3 +1248,25 @@ register_customer_portal(app,conn,tx,password_hash,check_pw,DATA,ROOT)
 # Optional Web Push API. Existing policy and login endpoints are unchanged.
 from push_service import build_router
 app.include_router(build_router(tx,current))
+
+
+# Flutter mobile policy corrections. Existing web endpoints remain unchanged.
+@app.put('/api/policies/{policy_id}')
+def edit_policy(policy_id:int, p:PolicyInput, u=Depends(current)):
+ if p.end_date < p.start_date:raise HTTPException(400,'Bitiş başlangıçtan önce')
+ try:
+  with tx() as c:
+   old=c.execute('SELECT * FROM policies WHERE id=?',(policy_id,)).fetchone()
+   if not old:raise HTTPException(404,'Poliçe bulunamadı')
+   c.execute('''UPDATE policies SET agency_id=?,branch_id=?,owner_user_id=?,seller_user_id=?,
+     customer_name=?,policy_type=?,policy_number=?,insurer=?,premium=?,start_date=?,
+     end_date=?,issued_date=?,tracking=?,external=? WHERE id=?''',
+     (p.agency_id,p.branch_id,p.owner_user_id,p.seller_user_id or p.owner_user_id,
+      p.customer_name,p.policy_type,p.policy_number,p.insurer,p.premium,str(p.start_date),
+      str(p.end_date),str(p.issued_date),int(p.tracking),int(p.external),policy_id))
+   renewal=c.execute('SELECT 1 FROM renewals WHERE policy_id=?',(policy_id,)).fetchone()
+   if p.tracking and not renewal:c.execute('INSERT INTO renewals(policy_id) VALUES (?)',(policy_id,))
+   if not p.tracking and renewal:c.execute('DELETE FROM renewals WHERE policy_id=?',(policy_id,))
+   audit(c,u['id'],'update','policy',policy_id)
+ except sqlite3.IntegrityError:raise HTTPException(409,'Aynı poliçe zaten kayıtlı')
+ return {'ok':True,'id':policy_id}
