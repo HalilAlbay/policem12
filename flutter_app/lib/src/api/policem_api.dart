@@ -45,5 +45,17 @@ class PolicemApi {
   Future<void> logout(String token) async {
     await _request('POST', '/api/logout', token: token);
   }
+  Future<Map<String, dynamic>> getSummary(String token, {String period = 'month'}) =>
+      _request('GET', '/api/summary?period=$period', token: token);
+  Future<List<dynamic>> getPolicies(String token, {String kind = 'active', String period = 'month'}) async {
+    final uri = Uri.parse('$baseUrl/api/policies').replace(queryParameters: {'kind':kind,'period':period});
+    final response = await client.get(uri, headers: {'Authorization':'Bearer $token'});
+    if (response.statusCode != 200) throw ApiException(response.statusCode, 'Poliçeler alınamadı');
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (decoded is! List) throw const ApiException(502, 'Poliçe yanıtı geçersiz');
+    return decoded;
+  }
+  Future<Map<String, dynamic>> getFinance(String token, {String period = 'month'}) =>
+      _request('GET', '/api/finance/summary?period=$period', token: token);
   void close() => client.close();
 }
