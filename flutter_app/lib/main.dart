@@ -30,6 +30,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final biometric = BiometricGate();
   bool biometricsAvailable = false;
   bool biometricsEnabled = false;
+  bool locked = false;
   bool busy = false;
   String? error;
   Map<String, dynamic>? user;
@@ -46,7 +47,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (biometricsEnabled) {
         final unlocked = await biometric.verify();
         if (!unlocked) {
-          if (mounted) setState(() => error = 'Biyometrik doğrulama gerekli.');
+          if (mounted) setState(() { locked = true; error = 'Biyometrik doğrulama gerekli.'; });
           return;
         }
       }
@@ -63,7 +64,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final loggedIn = await session.login(username.text.trim(), password.text);
       password.clear();
-      if (mounted) setState(() => user = loggedIn);
+      if (mounted) setState(() { user = loggedIn; locked = false; });
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
     } catch (_) {
@@ -77,12 +78,17 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await session.logout();
       await biometric.disable();
-      if (mounted) setState(() { user = null; error = null; });
+      if (mounted) setState(() { user = null; locked = false; error = null; });
     } catch (_) {
       if (mounted) setState(() => error = 'Çıkış işlemi tamamlanamadı.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+  Future<void> _unlock() async {
+    if (!await biometric.verify()) return;
+    setState(() { locked = false; error = null; });
+    await _restore();
   }
   Future<void> _enableBiometrics() async {
     final ok = await biometric.enroll();
@@ -96,7 +102,11 @@ class _LoginScreenState extends State<LoginScreen> {
   }
   @override Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Poliçem')),
-    body: user != null ? Column(children: [
+    body: locked ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Text('Poliçem kilitli'),
+      FilledButton(onPressed: _unlock, child: const Text('Face ID / Parmak izi ile aç')),
+      TextButton(onPressed: () async { await session.logout(); await biometric.disable(); if (mounted) setState(() { locked=false; user=null; error=null; }); }, child: const Text('Şifreyle yeniden giriş')),
+    ])) : user != null ? Column(children: [
       if (biometricsAvailable && !biometricsEnabled)
         ListTile(title: const Text('Face ID / Parmak izi ile aç'),
           trailing: FilledButton(onPressed: _enableBiometrics, child: const Text('Etkinleştir'))),
