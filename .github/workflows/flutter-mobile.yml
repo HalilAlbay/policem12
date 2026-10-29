@@ -32,7 +32,8 @@ jobs:
           manifest.write_text(text)
           PY
       - run: cd flutter_app && dart format lib test
-      - run: cd flutter_app && flutter analyze
+      - name: Analyze Flutter sources
+        run: cd flutter_app && flutter analyze
       - run: cd flutter_app && flutter test
       - run: cd flutter_app && flutter build apk --debug
       - uses: actions/upload-artifact@v4
