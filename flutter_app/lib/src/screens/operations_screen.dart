@@ -122,7 +122,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
   }
   Future<void> form(String title,String path,List<String> fields,{String method='POST',Map? initial}) async{
     final ctrls={for(final f in fields) f:TextEditingController(text:initial?[f]?.toString()??'')};
-    final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>AlertDialog(
+    final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,dialogSetState)=>AlertDialog(
       title:Text(title),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,
         children:[for(final f in fields)
           if(f=='agency_id'&&agencies.isNotEmpty)
@@ -137,7 +137,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
               onChanged:(v)=>ctrls[f]!.text=v??'')
           else if(['active','tracking','external'].contains(f))
             SwitchListTile(title:Text(f),value:ctrls[f]!.text=='true'||ctrls[f]!.text=='1',
-              onChanged:(v)=>setState(()=>ctrls[f]!.text=v.toString()))
+              onChanged:(v)=>dialogSetState(()=>ctrls[f]!.text=v.toString()))
           else if(f=='job_title')
             DropdownButtonFormField<String>(value:['agency_authority','agency_manager','technical','assistant_technical'].contains(ctrls[f]!.text)?ctrls[f]!.text:null,
               decoration:const InputDecoration(labelText:'Unvan'),
@@ -147,7 +147,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
           else TextField(controller:ctrls[f],decoration:InputDecoration(labelText:f))])),
       actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('İptal')),
         FilledButton(onPressed:()=>Navigator.pop(ctx,{
-          for(final e in ctrls.entries)e.key:e.value.text}),child:const Text('Kaydet'))]));
+          for(final e in ctrls.entries)e.key:e.value.text}),child:const Text('Kaydet'))])));
     // Dialog text controllers are disposed after the route is fully removed.
     for(final c in ctrls.values)c.dispose();
     if(result!=null)await submit(path,result,method:method);
