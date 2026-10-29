@@ -79,6 +79,17 @@ class _OperationsScreenState extends State<OperationsScreen> {
         if(data[k]==null||data[k]=='')data.remove(k);
       }
     }
+    if(path=='/api/policies'||path.startsWith('/api/policies/')) {
+      const required=['agency_id','customer_name','policy_type','policy_number',
+        'premium','start_date','end_date','issued_date'];
+      for(final k in required){if(data[k]==null||data[k]=='')throw FormatException('$k zorunlu');}
+      for(final k in ['start_date','end_date','issued_date']){
+        if(DateTime.tryParse('${data[k]}')==null)throw FormatException('$k geçerli tarih olmalı');
+      }
+      if(DateTime.parse('${data['end_date']}').isBefore(DateTime.parse('${data['start_date']}'))) {
+        throw const FormatException('Bitiş tarihi başlangıçtan önce olamaz');
+      }
+    }
     return data;
   }
   Future<void> submit(String path, Map<String,dynamic> payload,{String method='POST'}) async {
@@ -212,7 +223,20 @@ class _OperationsScreenState extends State<OperationsScreen> {
           child:const Text('Personel Ekle')),
         if(section!='pdf')TextField(decoration:const InputDecoration(labelText:'Ara',prefixIcon:Icon(Icons.search)),
           onChanged:(v)=>setState(()=>search=v)),
-        if(data is Map)SelectableText(const JsonEncoder.withIndent('  ').convert(data)),
+        if(section=='organization'&&data is Map)
+          for(final e in (data as Map).entries)Card(child:ExpansionTile(
+            title:Text('${e.key}'),children:[
+              if(e.value is List)for(final x in e.value as List)
+                ListTile(title:Text('${x is Map ? x['name']??x['display_name']??x['id'] : x}')),
+              if(e.value is! List)ListTile(title:Text('${e.value}'))])),
+        if(section=='insurers'&&data is Map)
+          for(final x in ((data as Map)['items'] as List? ?? []))
+            if(x is Map)Card(child:ListTile(title:Text('${x['insurer']}'),
+              subtitle:Text('${x['count']} poliçe'),
+              trailing:x['premium']!=null?Text('${x['premium']} TL'):null)),
+        if(section=='branding'&&data is Map)Card(child:ListTile(
+          title:Text('${(data as Map)['app_name']}'),
+          subtitle:Text('Renk: ${(data as Map)['color']} • Logo: ${(data as Map)['has_icon']==true?'Var':'Yok'}'))),
         if(section=='pdf'&&data is List)SelectableText(const JsonEncoder.withIndent('  ').convert(data)),
         for(final item in items)
           Card(child:ListTile(title:Text(item is Map
