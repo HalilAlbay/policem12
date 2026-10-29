@@ -95,6 +95,21 @@ class _OperationsScreenState extends State<OperationsScreen> {
     // Dialog text controllers are disposed after the route is fully removed.
     if(result!=null)await submit(path,result,method:method);
   }
+  Future<void> editStaff(Map item) async {
+    await form('Personel Düzenle','/api/users/${item['id']}',
+      ['display_name','phone','start_date','job_title','active'],method:'PUT');
+  }
+  Future<void> renew(int policyId) async {
+    final options=['bekliyor','arandi','teklif','kaybedildi'];
+    final status=await showDialog<String>(context:context,builder:(ctx)=>SimpleDialog(
+      title:const Text('Yenileme Durumu'),children:[
+        for(final option in options)SimpleDialogOption(
+          onPressed:()=>Navigator.pop(ctx,option),child:Text(option)),
+        const Padding(padding:EdgeInsets.all(12),
+          child:Text('Poliçeleştirildi işlemi yeni poliçe bilgilerini gerektirir.')),
+      ]));
+    if(status!=null)await submit('/api/renewals/$policyId',{'status':status});
+  }
   Future<void> pdf() async {
     final picked=await FilePicker.platform.pickFiles(type:FileType.custom,
       allowedExtensions:['pdf'],withData:true,allowMultiple:true);
@@ -147,7 +162,9 @@ class _OperationsScreenState extends State<OperationsScreen> {
               : '$item'),
             subtitle:Text(item is Map?'${item['policy_type']??''}  ${item['end_date']??''}':''),
             onTap:item is Map&&item['id']!=null&&section=='renewals'
-              ?()=>form('Yenileme Durumu','/api/renewals/${item['id']}',['status'])
+              ?()=>renew(item['id'] as int)
+              :item is Map&&item['id']!=null&&section=='users'
+              ?()=>editStaff(item)
               :()=>showDialog<void>(context:context,builder:(ctx)=>AlertDialog(
                 title:const Text('Kayıt Detayı'),content:SingleChildScrollView(
                   child:SelectableText(const JsonEncoder.withIndent('  ').convert(item))),
