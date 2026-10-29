@@ -62,6 +62,7 @@ class PolicemApi {
       {Map<String, dynamic>? body, Map<String, String>? query}) async {
     final uri = Uri.parse('$baseUrl$path').replace(queryParameters: query);
     final headers = <String,String>{'Authorization':'Bearer $token','Accept':'application/json'};
+    headers['X-User-Interaction']='1';
     if (body != null) headers['Content-Type']='application/json';
     late http.Response response;
     switch (method) {
@@ -82,6 +83,7 @@ class PolicemApi {
   Future<dynamic> uploadPdf(String token, List<int> bytes, String filename) async {
     final request=http.MultipartRequest('POST',Uri.parse('$baseUrl/api/pdf/extract'));
     request.headers['Authorization']='Bearer $token';
+    request.headers['X-User-Interaction']='1';
     request.files.add(http.MultipartFile.fromBytes('files',bytes,filename:filename));
     final streamed=await client.send(request);
     final response=await http.Response.fromStream(streamed);
@@ -106,6 +108,13 @@ class PolicemApi {
     }
     if(body is! Map<String,dynamic>)throw const ApiException(502,'Kayıt yanıtı geçersiz');
     return body;
+  }
+  Future<void> uploadBrandIcon(String token,List<int> bytes,String filename) async {
+    final req=http.MultipartRequest('POST',Uri.parse('$baseUrl/api/branding/icon'));
+    req.headers.addAll({'Authorization':'Bearer $token','X-User-Interaction':'1'});
+    req.files.add(http.MultipartFile.fromBytes('file',bytes,filename:filename));
+    final response=await http.Response.fromStream(await client.send(req));
+    if(response.statusCode<200||response.statusCode>=300)throw ApiException(response.statusCode,'Logo yüklenemedi');
   }
   void close() => client.close();
 }
