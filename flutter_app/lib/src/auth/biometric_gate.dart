@@ -22,8 +22,7 @@ class BiometricGate {
     try {
       return await auth.authenticate(
         localizedReason: 'Poliçem oturumunu açmak için kimliğinizi doğrulayın',
-        biometricOnly: true,
-        persistAcrossBackgrounding: true,
+        options: const AuthenticationOptions(biometricOnly: true, stickyAuth: true),
       );
     } catch (_) { return false; }
   }
