@@ -1266,7 +1266,7 @@ def edit_policy(policy_id:int, p:PolicyInput, u=Depends(current)):
       str(p.end_date),str(p.issued_date),int(p.tracking),int(p.external),policy_id))
    renewal=c.execute('SELECT 1 FROM renewals WHERE policy_id=?',(policy_id,)).fetchone()
    if p.tracking and not renewal:c.execute('INSERT INTO renewals(policy_id) VALUES (?)',(policy_id,))
-   if not p.tracking and renewal:c.execute('DELETE FROM renewals WHERE policy_id=?',(policy_id,))
+   # Keep renewal history even when tracking is disabled; list queries use p.tracking.
    audit(c,u['id'],'update','policy',policy_id)
  except sqlite3.IntegrityError:raise HTTPException(409,'Aynı poliçe zaten kayıtlı')
  return {'ok':True,'id':policy_id}
