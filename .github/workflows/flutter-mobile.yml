@@ -31,7 +31,7 @@ jobs:
           text=text.replace('<application', '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <application',1)
           manifest.write_text(text)
           PY
-      - run: cd flutter_app && dart format --output=none --set-exit-if-changed lib test
+      - run: cd flutter_app && dart format lib test
       - run: cd flutter_app && flutter analyze
       - run: cd flutter_app && flutter test
       - run: cd flutter_app && flutter build apk --debug
