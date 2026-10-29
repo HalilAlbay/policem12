@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../api/policem_api.dart';
+import 'pdf_review_screen.dart';
 
 class OperationsScreen extends StatefulWidget {
   final PolicemApi api;
@@ -135,7 +136,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
           onChanged:(v){if(v!=null){setState((){section=v;data=null;search='';});load();}}),
         if(busy)const LinearProgressIndicator(),
         if(error!=null)Text(error!,style:const TextStyle(color:Colors.red)),
-        if(section=='pdf')FilledButton(onPressed:busy?null:pdf,child:const Text('PDF dosyalarını seç ve oku')),
+        if(section=='pdf')FilledButton(onPressed:busy?null:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>PdfReviewScreen(api:widget.api,token:widget.token))),child:const Text('PDF Yükle, Kontrol Et ve Kaydet')),
         if(section=='policies')FilledButton(onPressed:()=>form('Yeni Poliçe','/api/policies',
           ['agency_id','branch_id','customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date']),
           child:const Text('Poliçe Ekle')),
