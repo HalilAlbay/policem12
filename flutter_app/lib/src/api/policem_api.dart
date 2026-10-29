@@ -20,6 +20,7 @@ class PolicemApi {
     final headers = <String, String>{'Accept': 'application/json'};
     if (body != null) headers['Content-Type'] = 'application/json';
     if (token != null) headers['Authorization'] = 'Bearer $token';
+    if (token != null) headers['X-User-Interaction'] = '1';
     final response = method == 'POST'
         ? await client.post(uri, headers: headers, body: body == null ? null : jsonEncode(body))
         : await client.get(uri, headers: headers);
@@ -49,7 +50,7 @@ class PolicemApi {
       _request('GET', '/api/summary?period=$period', token: token);
   Future<List<dynamic>> getPolicies(String token, {String kind = 'active', String period = 'month'}) async {
     final uri = Uri.parse('$baseUrl/api/policies').replace(queryParameters: {'kind':kind,'period':period});
-    final response = await client.get(uri, headers: {'Authorization':'Bearer $token'});
+    final response = await client.get(uri, headers: {'Authorization':'Bearer $token','X-User-Interaction':'1'});
     if (response.statusCode != 200) throw ApiException(response.statusCode, 'Poliçeler alınamadı');
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     if (decoded is! List) throw const ApiException(502, 'Poliçe yanıtı geçersiz');
