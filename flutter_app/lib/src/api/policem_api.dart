@@ -57,5 +57,37 @@ class PolicemApi {
   }
   Future<Map<String, dynamic>> getFinance(String token, {String period = 'month'}) =>
       _request('GET', '/api/finance/summary?period=$period', token: token);
+  Future<dynamic> request(String method, String path, String token,
+      {Map<String, dynamic>? body, Map<String, String>? query}) async {
+    final uri = Uri.parse('$baseUrl$path').replace(queryParameters: query);
+    final headers = <String,String>{'Authorization':'Bearer $token','Accept':'application/json'};
+    if (body != null) headers['Content-Type']='application/json';
+    late http.Response response;
+    switch (method) {
+      case 'POST': response=await client.post(uri,headers:headers,body:jsonEncode(body)); break;
+      case 'PUT': response=await client.put(uri,headers:headers,body:jsonEncode(body)); break;
+      case 'DELETE': response=await client.delete(uri,headers:headers); break;
+      default: response=await client.get(uri,headers:headers);
+    }
+    dynamic data;
+    try { data=jsonDecode(utf8.decode(response.bodyBytes)); }
+    catch (_) { throw ApiException(response.statusCode,'Sunucu yanıtı okunamadı'); }
+    if(response.statusCode<200 || response.statusCode>=300) {
+      throw ApiException(response.statusCode, 'İşlem başarısız: ${data is Map ? data['detail'] ?? response.statusCode : response.statusCode}');
+    }
+    return data;
+  }
+
+  Future<dynamic> uploadPdf(String token, List<int> bytes, String filename) async {
+    final request=http.MultipartRequest('POST',Uri.parse('$baseUrl/api/pdf/extract'));
+    request.headers['Authorization']='Bearer $token';
+    request.files.add(http.MultipartFile.fromBytes('files',bytes,filename:filename));
+    final streamed=await client.send(request);
+    final response=await http.Response.fromStream(streamed);
+    if(response.statusCode<200 || response.statusCode>=300) {
+      throw ApiException(response.statusCode,'PDF yüklenemedi');
+    }
+    return jsonDecode(utf8.decode(response.bodyBytes));
+  }
   void close() => client.close();
 }
