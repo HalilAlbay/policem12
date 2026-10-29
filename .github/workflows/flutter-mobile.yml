@@ -1,0 +1,59 @@
+name: Flutter mobile validation
+on:
+  push:
+    branches: [feature/flutter-migration]
+  pull_request:
+    paths: ['flutter_app/**', '.github/workflows/flutter-mobile.yml']
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Generate platform runner
+        run: |
+          cd flutter_app
+          flutter create --platforms=android,ios --project-name policem_flutter .
+      - name: Install dependencies
+        run: cd flutter_app && flutter pub get
+      - name: Configure Android biometrics
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('flutter_app/android/app/src/main')
+          for p in root.rglob('MainActivity.kt'):
+              text=p.read_text().replace('import io.flutter.embedding.android.FlutterActivity','import io.flutter.embedding.android.FlutterFragmentActivity').replace(' : FlutterActivity()', ' : FlutterFragmentActivity()')
+              p.write_text(text)
+          manifest=root/'AndroidManifest.xml'
+          text=manifest.read_text()
+          text=text.replace('<application', '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <application',1)
+          manifest.write_text(text)
+          PY
+      - run: cd flutter_app && dart format --output=none --set-exit-if-changed lib test
+      - run: cd flutter_app && flutter analyze
+      - run: cd flutter_app && flutter test
+      - run: cd flutter_app && flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: policem-android-debug
+          path: flutter_app/build/app/outputs/flutter-apk/app-debug.apk
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: cd flutter_app && flutter create --platforms=android,ios --project-name policem_flutter .
+      - name: Configure iOS Face ID permission
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('flutter_app/ios/Runner/Info.plist')
+          t=p.read_text().replace('</dict>', '  <key>NSFaceIDUsageDescription</key>\n  <string>Poliçem oturumunu Face ID ile açmak için kullanılır.</string>\n</dict>',1)
+          p.write_text(t)
+          PY
+      - run: cd flutter_app && flutter pub get
+      - run: cd flutter_app && flutter build ios --simulator --no-codesign
