@@ -39,29 +39,25 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           cache = Path.home() / '.pub-cache' / 'hosted' / 'pub.dev'
-          matches = list(cache.glob('file_picker-*/android/build.gradle'))
-          matches += list(cache.glob('file_picker-*/android/build.gradle.kts'))
-          if not matches:
-              raise SystemExit('file_picker Android Gradle configuration not found')
-          for path in matches:
+          files = list(cache.glob('file_picker-*/android/build.gradle'))
+          files += list(cache.glob('file_picker-*/android/build.gradle.kts'))
+          if not files:
+              raise SystemExit('file_picker Android Gradle file not found')
+          for path in files:
               source = path.read_text()
-              updated, count = re.subn(
-                  r'compileSdkVersion\\s*\\(?\\s*\\d+\\s*\\)?|compileSdk\\s*(?:=\\s*)?\\d+',
-                  'compileSdkVersion 36',
-                  source
-              )
-              if not count:
-                  updated, count = re.subn(
-                      r'compileSdkVersion\\s+flutter\\.compileSdkVersion|compileSdk\\s*=\\s*flutter\\.compileSdkVersion',
-                      'compileSdkVersion 36',
-                      source
-                  )
-              if not count:
-                  raise SystemExit(f'Unsupported file_picker compileSdk syntax: {path}')
-              path.write_text(updated)
-              print(f'Updated {path} to compileSdk 36')
+              lines = source.splitlines(keepends=True)
+              found = False
+              for index, line in enumerate(lines):
+                  stripped = line.strip()
+                  if stripped.startswith(('compileSdkVersion ', 'compileSdkVersion(', 'compileSdk ', 'compileSdk=')):
+                      indent = line[:len(line)-len(line.lstrip())]
+                      lines[index] = indent + 'compileSdkVersion 36\n'
+                      found = True
+              if not found:
+                  raise SystemExit(f'No compileSdk declaration in {path}')
+              path.write_text(''.join(lines))
+              print(f'Patched {path}')
           PY
       - run: cd flutter_app && flutter build apk --debug
       - uses: actions/upload-artifact@v4
