@@ -55,7 +55,7 @@ class _TransferScreenState extends State<TransferScreen> {
         if(result!=null)Text(result!,style:const TextStyle(color:Colors.green)),
         DropdownButtonFormField<int>(value:from,decoration:const InputDecoration(labelText:'Kaynak personel'),
           items:[for(final p in staff)DropdownMenuItem(value:p['id'] as int,child:Text('${p['display_name']}'))],
-          onChanged:(v)=>setState((){from=v;selected.clear();})),
+          onChanged:(v)=>setState((){from=v;to=null;selected.clear();})),
         DropdownButtonFormField<int>(value:to,decoration:const InputDecoration(labelText:'Hedef personel'),
           items:[for(final p in staff.where((p)=>p['active']==true&&p['id']!=from))
             DropdownMenuItem(value:p['id'] as int,child:Text('${p['display_name']}'))],
