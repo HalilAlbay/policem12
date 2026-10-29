@@ -90,5 +90,22 @@ class PolicemApi {
     }
     return jsonDecode(utf8.decode(response.bodyBytes));
   }
+  Future<Map<String,dynamic>> savePdfPolicy(String token, List<int> bytes,
+      String filename, Map<String,dynamic> policy) async {
+    final req=http.MultipartRequest('POST',Uri.parse('$baseUrl/api/policies/with-document'));
+    req.headers['Authorization']='Bearer $token';
+    req.headers['X-User-Interaction']='1';
+    req.fields['payload']=jsonEncode(policy);
+    req.files.add(http.MultipartFile.fromBytes('file',bytes,filename:filename));
+    final response=await http.Response.fromStream(await client.send(req));
+    dynamic body;
+    try { body=jsonDecode(utf8.decode(response.bodyBytes)); }
+    catch (_) {throw ApiException(response.statusCode,'PDF kayıt yanıtı okunamadı');}
+    if(response.statusCode<200||response.statusCode>=300) {
+      throw ApiException(response.statusCode, 'PDF poliçesi kaydedilemedi: ${body is Map ? body['detail'] : response.statusCode}');
+    }
+    if(body is! Map<String,dynamic>)throw const ApiException(502,'Kayıt yanıtı geçersiz');
+    return body;
+  }
   void close() => client.close();
 }
