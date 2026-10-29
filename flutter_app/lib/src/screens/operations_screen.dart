@@ -21,13 +21,24 @@ class _OperationsScreenState extends State<OperationsScreen> {
   String? error;
   bool busy=false;
   dynamic data;
+  List<Map<String,dynamic>> agencies=[];
+  List<Map<String,dynamic>> branches=[];
   final sections=<String,String>{
     'policies':'Poliçeler', 'renewals':'Yenilemeler', 'pdf':'PDF Okuma',
     'insurers':'Sigorta Şirketleri', 'reminders':'Hatırlatmalar',
     'transfer':'Poliçe Devri', 'users':'Personel', 'organization':'Acente ve Şubeler',
     'branding':'Uygulama Ayarları',
   };
-  @override void initState(){super.initState();load();}
+  @override void initState(){super.initState();load();loadOrganization();}
+  Future<void> loadOrganization() async {
+    try {
+      final r=await widget.api.request('GET','/api/organization',widget.token);
+      if(mounted&&r is Map)setState((){
+        agencies=(r['agencies'] as List? ?? []).map((e)=>Map<String,dynamic>.from(e as Map)).toList();
+        branches=(r['branches'] as List? ?? []).map((e)=>Map<String,dynamic>.from(e as Map)).toList();
+      });
+    }catch(e){if(mounted)setState(()=>error='$e');}
+  }
   bool get manager=>widget.role=='manager'||widget.role=='partner';
   bool get partner=>widget.role=='partner';
   Future<void> load() async {
@@ -79,6 +90,13 @@ class _OperationsScreenState extends State<OperationsScreen> {
         if(data[k]==null||data[k]=='')data.remove(k);
       }
     }
+    if(path=='/api/users') {
+      const roles={'agency_authority':'partner','agency_manager':'manager','technical':'staff','assistant_technical':'staff'};
+      if(roles.containsKey(data['job_title']))data['role']=roles[data['job_title']];
+      for(final k in ['username','display_name','password','phone','start_date','job_title']){
+        if(data[k]==null||data[k]=='')throw FormatException('$k zorunlu');
+      }
+    }
     if(path=='/api/policies'||path.startsWith('/api/policies/')) {
       const required=['agency_id','customer_name','policy_type','policy_number',
         'premium','start_date','end_date','issued_date'];
@@ -97,6 +115,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
     try{
       await widget.api.request(method,path,widget.token,body:normalize(path,payload));
       await load();
+      if(path=='/api/agencies'||path=='/api/branches')await loadOrganization();
       if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Kaydedildi')));
     }catch(e){if(mounted)setState(()=>error='$e');}
     finally{if(mounted)setState(()=>busy=false);}
@@ -105,12 +124,32 @@ class _OperationsScreenState extends State<OperationsScreen> {
     final ctrls={for(final f in fields) f:TextEditingController(text:initial?[f]?.toString()??'')};
     final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>AlertDialog(
       title:Text(title),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,
-        children:[for(final f in fields)TextField(controller:ctrls[f],
-          decoration:InputDecoration(labelText:f))])),
+        children:[for(final f in fields)
+          if(f=='agency_id'&&agencies.isNotEmpty)
+            DropdownButtonFormField<String>(value:agencies.any((a)=>'${a['id']}'==ctrls[f]!.text)?ctrls[f]!.text:null,
+              decoration:const InputDecoration(labelText:'Acente'),
+              items:[for(final a in agencies)DropdownMenuItem(value:'${a['id']}',child:Text('${a['name']}'))],
+              onChanged:(v)=>ctrls[f]!.text=v??'')
+          else if(f=='branch_id'&&branches.isNotEmpty)
+            DropdownButtonFormField<String>(value:branches.any((a)=>'${a['id']}'==ctrls[f]!.text)?ctrls[f]!.text:null,
+              decoration:const InputDecoration(labelText:'Şube'),
+              items:[for(final a in branches)DropdownMenuItem(value:'${a['id']}',child:Text('${a['name']}'))],
+              onChanged:(v)=>ctrls[f]!.text=v??'')
+          else if(['active','tracking','external'].contains(f))
+            SwitchListTile(title:Text(f),value:ctrls[f]!.text=='true'||ctrls[f]!.text=='1',
+              onChanged:(v)=>setState(()=>ctrls[f]!.text=v.toString()))
+          else if(f=='job_title')
+            DropdownButtonFormField<String>(value:['agency_authority','agency_manager','technical','assistant_technical'].contains(ctrls[f]!.text)?ctrls[f]!.text:null,
+              decoration:const InputDecoration(labelText:'Unvan'),
+              items:[for(final title in (partner?['agency_authority','agency_manager','technical','assistant_technical']:['technical','assistant_technical']))
+                DropdownMenuItem(value:title,child:Text(title))],
+              onChanged:(v)=>ctrls[f]!.text=v??'')
+          else TextField(controller:ctrls[f],decoration:InputDecoration(labelText:f))])),
       actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('İptal')),
         FilledButton(onPressed:()=>Navigator.pop(ctx,{
           for(final e in ctrls.entries)e.key:e.value.text}),child:const Text('Kaydet'))]));
     // Dialog text controllers are disposed after the route is fully removed.
+    for(final c in ctrls.values)c.dispose();
     if(result!=null)await submit(path,result,method:method);
   }
   Future<void> editPolicy(Map item) async {
@@ -219,7 +258,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
           onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>TransferScreen(api:widget.api,token:widget.token))),
           child:const Text('Devir Oluştur')),
         if(section=='users'&&manager)FilledButton(
-          onPressed:()=>form('Personel Ekle','/api/users',['username','display_name','password','role','branch_id','email','phone','job_title']),
+          onPressed:()=>form('Personel Ekle','/api/users',['username','display_name','password','role','branch_id','email','phone','start_date','job_title']),
           child:const Text('Personel Ekle')),
         if(section!='pdf')TextField(decoration:const InputDecoration(labelText:'Ara',prefixIcon:Icon(Icons.search)),
           onChanged:(v)=>setState(()=>search=v)),
