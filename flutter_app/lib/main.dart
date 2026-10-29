@@ -31,6 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool biometricsAvailable = false;
   bool biometricsEnabled = false;
   bool locked = false;
+  bool unlockVerified = false;
   bool busy = false;
   String? error;
   Map<String, dynamic>? user;
@@ -44,13 +45,14 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       biometricsAvailable = await biometric.available();
       biometricsEnabled = await biometric.enabled();
-      if (biometricsEnabled) {
+      if (biometricsEnabled && !unlockVerified) {
         final unlocked = await biometric.verify();
         if (!unlocked) {
           if (mounted) setState(() { locked = true; error = 'Biyometrik doğrulama gerekli.'; });
           return;
         }
       }
+      unlockVerified = false;
       final restored = await session.restore();
       if (mounted) setState(() => user = restored);
     } catch (_) {
@@ -87,7 +89,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
   Future<void> _unlock() async {
     if (!await biometric.verify()) return;
-    setState(() { locked = false; error = null; });
+    setState(() { locked = false; error = null; unlockVerified = true; });
     await _restore();
   }
   Future<void> _enableBiometrics() async {
