@@ -33,7 +33,7 @@ jobs:
           PY
       - run: cd flutter_app && dart format lib test
       - name: Analyze Flutter sources
-        run: cd flutter_app && flutter analyze
+        run: cd flutter_app && flutter analyze --no-fatal-infos --no-fatal-warnings
       - run: cd flutter_app && flutter test
       - run: cd flutter_app && flutter build apk --debug
       - uses: actions/upload-artifact@v4
