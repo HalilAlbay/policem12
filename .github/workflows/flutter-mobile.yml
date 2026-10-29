@@ -48,7 +48,7 @@ jobs:
           for path in matches:
               text = path.read_text()
               import re
-              text, n = re.subn(r'compileSdkVersion\\s+\\d+|compileSdk\\s*=\\s*\\d+', 'compileSdkVersion 36', text)
+              text, n = re.subn(r'compileSdkVersion\s+\d+|compileSdk\s*=\s*\d+', 'compileSdkVersion 36', text)
               if n == 0:
                   raise SystemExit(f'file_picker compileSdk setting not found: {path}')
               path.write_text(text)
