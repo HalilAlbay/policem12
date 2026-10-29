@@ -15,6 +15,8 @@ class OperationsScreen extends StatefulWidget {
 class _OperationsScreenState extends State<OperationsScreen> {
   String section='policies';
   String search='';
+  String kind='all';
+  String period='month';
   String? error;
   bool busy=false;
   dynamic data;
@@ -37,7 +39,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
         'organization':'/api/organization','branding':'/api/branding'
       }[section];
       final result=path==null ? null : await widget.api.request('GET',path,widget.token,
-        query: section=='renewals'?{'kind':'upcoming'}:null);
+        query: section=='renewals'?{'kind':'upcoming'}:section=='policies'?{'kind':kind,'period':period}:section=='insurers'?{'period':period}:null);
       if(mounted)setState(()=>data=result);
     }catch(e){if(mounted)setState(()=>error='$e');}
     finally{if(mounted)setState(()=>busy=false);}
@@ -84,8 +86,8 @@ class _OperationsScreenState extends State<OperationsScreen> {
     }catch(e){if(mounted)setState(()=>error='$e');}
     finally{if(mounted)setState(()=>busy=false);}
   }
-  Future<void> form(String title,String path,List<String> fields,{String method='POST'}) async{
-    final ctrls={for(final f in fields) f:TextEditingController()};
+  Future<void> form(String title,String path,List<String> fields,{String method='POST',Map? initial}) async{
+    final ctrls={for(final f in fields) f:TextEditingController(text:initial?[f]?.toString()??'')};
     final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>AlertDialog(
       title:Text(title),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,
         children:[for(final f in fields)TextField(controller:ctrls[f],
@@ -96,12 +98,18 @@ class _OperationsScreenState extends State<OperationsScreen> {
     // Dialog text controllers are disposed after the route is fully removed.
     if(result!=null)await submit(path,result,method:method);
   }
+  Future<void> editPolicy(Map item) async {
+    await form('Poliçe Düzenle','/api/policies/${item['id']}',
+      ['agency_id','branch_id','owner_user_id','seller_user_id','customer_name','policy_type',
+       'policy_number','insurer','premium','start_date','end_date','issued_date','tracking','external'],
+      method:'PUT',initial:item);
+  }
   Future<void> editStaff(Map item) async {
     await form('Personel Düzenle','/api/users/${item['id']}',
-      ['display_name','phone','start_date','job_title','active'],method:'PUT');
+      ['display_name','phone','start_date','job_title','active'],method:'PUT',initial:item);
   }
   Future<void> renew(int policyId) async {
-    final options=['bekliyor','arandi','teklif','kaybedildi'];
+    final options=['bekliyor','arandi','teklif','kaybedildi','policelestirildi'];
     final status=await showDialog<String>(context:context,builder:(ctx)=>SimpleDialog(
       title:const Text('Yenileme Durumu'),children:[
         for(final option in options)SimpleDialogOption(
@@ -109,7 +117,25 @@ class _OperationsScreenState extends State<OperationsScreen> {
         const Padding(padding:EdgeInsets.all(12),
           child:Text('Poliçeleştirildi işlemi yeni poliçe bilgilerini gerektirir.')),
       ]));
-    if(status!=null)await submit('/api/renewals/$policyId',{'status':status});
+    if(status=='policelestirildi') {
+      final old=await widget.api.request('GET','/api/policies',widget.token);
+      final item=(old as List).cast<Map>().firstWhere((p)=>p['id']==policyId);
+      final keys=['agency_id','branch_id','owner_user_id','customer_name','policy_type',
+        'policy_number','insurer','premium','start_date','end_date','issued_date'];
+      final ctrls={for(final k in keys)k:TextEditingController(text:'${item[k]??''}')};
+      final values=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>AlertDialog(
+        title:const Text('Yeni Poliçe Bilgileri'),content:SingleChildScrollView(
+          child:Column(mainAxisSize:MainAxisSize.min,children:[
+            for(final k in keys)TextField(controller:ctrls[k],decoration:InputDecoration(labelText:k))])),
+        actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('İptal')),
+          FilledButton(onPressed:()=>Navigator.pop(ctx,{for(final e in ctrls.entries)e.key:e.value.text}),
+            child:const Text('Poliçeleştir'))]));
+      if(values==null)return;
+      try {
+        final policy=normalize('/api/policies',values);
+        await submit('/api/renewals/$policyId',{'status':status,'new_policy':policy});
+      }catch(e){if(mounted)setState(()=>error='$e');}
+    }else if(status!=null){await submit('/api/renewals/$policyId',{'status':status});}
   }
   Future<void> pdf() async {
     final picked=await FilePicker.platform.pickFiles(type:FileType.custom,
@@ -136,6 +162,22 @@ class _OperationsScreenState extends State<OperationsScreen> {
           onChanged:(v){if(v!=null){setState((){section=v;data=null;search='';});load();}}),
         if(busy)const LinearProgressIndicator(),
         if(error!=null)Text(error!,style:const TextStyle(color:Colors.red)),
+        if(section=='policies')...[
+          DropdownButton<String>(value:kind,isExpanded:true,items:const [
+            DropdownMenuItem(value:'all',child:Text('Tüm poliçeler')),
+            DropdownMenuItem(value:'active',child:Text('Aktif')),
+            DropdownMenuItem(value:'upcoming',child:Text('Yaklaşan')),
+            DropdownMenuItem(value:'offer',child:Text('Teklif')),
+            DropdownMenuItem(value:'issued',child:Text('Kesilen'))],
+            onChanged:(v){if(v!=null){setState(()=>kind=v);load();}}),
+        ],
+        if(section=='policies'||section=='insurers')DropdownButton<String>(
+          value:period,isExpanded:true,items:const [
+            DropdownMenuItem(value:'day',child:Text('Gün')),
+            DropdownMenuItem(value:'week',child:Text('Hafta')),
+            DropdownMenuItem(value:'month',child:Text('Ay')),
+            DropdownMenuItem(value:'year',child:Text('Yıl'))],
+          onChanged:(v){if(v!=null){setState(()=>period=v);load();}}),
         if(section=='pdf')FilledButton(onPressed:busy?null:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>PdfReviewScreen(api:widget.api,token:widget.token))),child:const Text('PDF Yükle, Kontrol Et ve Kaydet')),
         if(section=='policies')FilledButton(onPressed:()=>form('Yeni Poliçe','/api/policies',
           ['agency_id','branch_id','customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date']),
@@ -147,6 +189,17 @@ class _OperationsScreenState extends State<OperationsScreen> {
         if(section=='branding'&&manager)FilledButton(
           onPressed:()=>form('Marka Ayarları','/api/branding',['app_name','color'],method:'PUT'),
           child:const Text('Uygulama Adı ve Rengi')),
+        if(section=='branding'&&manager)FilledButton(
+          onPressed:()async{
+            final picked=await FilePicker.platform.pickFiles(type:FileType.image,withData:true);
+            if(picked==null||picked.files.single.bytes==null)return;
+            try{await widget.api.uploadBrandIcon(widget.token,picked.files.single.bytes!,picked.files.single.name);await load();}
+            catch(e){if(mounted)setState(()=>error='$e');}
+          },child:const Text('Logo Yükle')),
+        if(section=='branding'&&manager)OutlinedButton(
+          onPressed:()async{try{await widget.api.request('DELETE','/api/branding/icon',widget.token);await load();}
+          catch(e){if(mounted)setState(()=>error='$e');}},
+          child:const Text('Logoyu Kaldır')),
         if(section=='transfer'&&manager)FilledButton(
           onPressed:()=>form('Poliçe Devri','/api/transfer',['from_user_id','to_user_id']),
           child:const Text('Devir Oluştur')),
@@ -162,7 +215,9 @@ class _OperationsScreenState extends State<OperationsScreen> {
               ? '${item['customer_name']??item['display_name']??item['insurer']??item['id']??'Kayıt'}'
               : '$item'),
             subtitle:Text(item is Map?'${item['policy_type']??''}  ${item['end_date']??''}':''),
-            onTap:item is Map&&item['id']!=null&&section=='renewals'
+            onTap:item is Map&&item['id']!=null&&section=='policies'
+              ?()=>editPolicy(item)
+              :item is Map&&item['id']!=null&&section=='renewals'
               ?()=>renew(item['id'] as int)
               :item is Map&&item['id']!=null&&section=='users'
               ?()=>editStaff(item)
