@@ -41,10 +41,43 @@ class _OperationsScreenState extends State<OperationsScreen> {
     }catch(e){if(mounted)setState(()=>error='$e');}
     finally{if(mounted)setState(()=>busy=false);}
   }
+  Map<String,dynamic> normalize(String path, Map<String,dynamic> input) {
+    final data=Map<String,dynamic>.from(input);
+    const ints={'agency_id','branch_id','owner_user_id','seller_user_id','from_user_id','to_user_id'};
+    for(final k in ints) {
+      if(data[k] is String) {
+        final v=(data[k] as String).trim();
+        data[k]=v.isEmpty?null:int.tryParse(v);
+        if(v.isNotEmpty&&data[k]==null)throw FormatException('$k sayı olmalı');
+      }
+    }
+    if(data.containsKey('premium')) {
+      data['premium']=double.tryParse('${data['premium']}'.replaceAll(',','.'));
+      if(data['premium']==null)throw const FormatException('Prim geçersiz');
+    }
+    for(final k in ['tracking','external','active']) {
+      if(data[k] is String) {
+        final v=(data[k] as String).toLowerCase().trim();
+        if(v!='true'&&v!='false'&&v!='1'&&v!='0')throw FormatException('$k true/false olmalı');
+        data[k]=v=='true'||v=='1';
+      }
+    }
+    if(path.startsWith('/api/renewals/')) {
+      if(!['bekliyor','arandi','teklif','policelestirildi','kaybedildi'].contains(data['status'])) {
+        throw const FormatException('Geçersiz yenileme durumu');
+      }
+    }
+    if(path=='/api/policies'||path=='/api/users') {
+      for(final k in data.keys.toList()) {
+        if(data[k]==null||data[k]=='')data.remove(k);
+      }
+    }
+    return data;
+  }
   Future<void> submit(String path, Map<String,dynamic> payload,{String method='POST'}) async {
     setState(()=>busy=true);
     try{
-      await widget.api.request(method,path,widget.token,body:payload);
+      await widget.api.request(method,path,widget.token,body:normalize(path,payload));
       await load();
       if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Kaydedildi')));
     }catch(e){if(mounted)setState(()=>error='$e');}
@@ -59,7 +92,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
       actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('İptal')),
         FilledButton(onPressed:()=>Navigator.pop(ctx,{
           for(final e in ctrls.entries)e.key:e.value.text}),child:const Text('Kaydet'))]));
-    for(final c in ctrls.values){c.dispose();}
+    // Dialog text controllers are disposed after the route is fully removed.
     if(result!=null)await submit(path,result,method:method);
   }
   Future<void> pdf() async {
@@ -89,7 +122,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
         if(error!=null)Text(error!,style:const TextStyle(color:Colors.red)),
         if(section=='pdf')FilledButton(onPressed:busy?null:pdf,child:const Text('PDF dosyalarını seç ve oku')),
         if(section=='policies')FilledButton(onPressed:()=>form('Yeni Poliçe','/api/policies',
-          ['customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date']),
+          ['agency_id','branch_id','customer_name','policy_type','policy_number','insurer','premium','start_date','end_date','issued_date']),
           child:const Text('Poliçe Ekle')),
         if(section=='organization'&&manager)...[
           if(partner)FilledButton(onPressed:()=>form('Acente Ekle','/api/agencies',['name']),child:const Text('Acente Ekle')),
