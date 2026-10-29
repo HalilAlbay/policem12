@@ -8,6 +8,8 @@ class SessionManager {
   SessionManager(this.api, {FlutterSecureStorage? storage})
       : storage = storage ?? const FlutterSecureStorage();
 
+  Future<String?> accessToken() => storage.read(key: _key);
+
   Future<Map<String, dynamic>> login(String username, String password) async {
     final result = await api.login(username, password);
     final token = result['token'];
