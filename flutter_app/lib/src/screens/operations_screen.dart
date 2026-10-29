@@ -46,6 +46,9 @@ class _OperationsScreenState extends State<OperationsScreen> {
   }
   Map<String,dynamic> normalize(String path, Map<String,dynamic> input) {
     final data=Map<String,dynamic>.from(input);
+    if(data['new_policy'] is Map) {
+      data['new_policy']=normalize('/api/policies',Map<String,dynamic>.from(data['new_policy'] as Map));
+    }
     const ints={'agency_id','branch_id','owner_user_id','seller_user_id','from_user_id','to_user_id'};
     for(final k in ints) {
       if(data[k] is String) {
@@ -70,7 +73,7 @@ class _OperationsScreenState extends State<OperationsScreen> {
         throw const FormatException('Geçersiz yenileme durumu');
       }
     }
-    if(path=='/api/policies'||path=='/api/users') {
+    if(path=='/api/policies'||path=='/api/users'||path.startsWith('/api/policies/')) {
       for(final k in data.keys.toList()) {
         if(data[k]==null||data[k]=='')data.remove(k);
       }
